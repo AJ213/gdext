@@ -46,6 +46,7 @@ use std::fmt;
 /// [`Vector4i` (stable)](https://docs.godotengine.org/en/stable/classes/class_vector4i.html)
 #[derive(Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Vector4i {
     /// The vector's X component.

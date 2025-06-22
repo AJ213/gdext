@@ -92,6 +92,7 @@ use super::Color;
 /// - Smith, Alvy Ray. "Color gamut transform pairs." ACM Siggraph Computer Graphics 12.3 (1978): 12-19.
 #[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 pub struct ColorHsv {
     pub h: f32,
     pub s: f32,

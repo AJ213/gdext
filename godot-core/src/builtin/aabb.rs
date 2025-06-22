@@ -33,6 +33,7 @@ use crate::builtin::{real, Plane, Vector3, Vector3Axis};
 /// [`AABB`](https://docs.godotengine.org/en/stable/classes/class_aabb.html)
 #[derive(Default, Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Aabb {
     pub position: Vector3,

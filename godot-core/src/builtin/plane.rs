@@ -28,6 +28,7 @@ use std::ops::Neg;
 /// [Plane (stable)](https://docs.godotengine.org/en/stable/classes/class_plane.html)
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Plane {
     /// Normal vector pointing away from the plane.

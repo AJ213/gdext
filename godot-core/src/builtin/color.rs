@@ -30,6 +30,7 @@ use sys::{ffi_methods, ExtVariantType, GodotFfi};
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 pub struct Color {
     /// The color's red component.
     pub r: f32,

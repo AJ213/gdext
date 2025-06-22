@@ -42,6 +42,7 @@ use super::{Aabb, Rect2, Vector3};
 /// [`Projection` (stable)](https://docs.godotengine.org/en/stable/classes/class_projection.html)
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Projection {
     /// The columns of the projection matrix.

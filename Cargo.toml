@@ -24,6 +24,7 @@ gdextension-api = { version = "0.2.2", git = "https://github.com/godot-rust/godo
 # Main library features.
 glam = { version = "0.30", features = ["debug-glam-assert"] }
 serde = { version = "1", features = ["derive"] }
+bitcode = { version = "0.6.0" }
 serde_json = "1"
 
 # Related to tooling/build setup.

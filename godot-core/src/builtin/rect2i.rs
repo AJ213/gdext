@@ -33,6 +33,7 @@ use sys::{ffi_methods, ExtVariantType, GodotFfi};
 /// [`Rect2i` (stable)](https://docs.godotengine.org/en/stable/classes/class_rect2i.html)
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Rect2i {
     /// The position of the rectangle.

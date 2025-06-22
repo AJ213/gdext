@@ -49,6 +49,7 @@ use crate::builtin::{inner, real, RVec3, Vector3, Vector3Axis};
 /// [`Vector3i` (stable)](https://docs.godotengine.org/en/stable/classes/class_vector3i.html)
 #[derive(Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Vector3i {
     /// The vector's X component.

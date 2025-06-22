@@ -51,6 +51,7 @@ use std::ops::Mul;
 /// [`Transform3D` (stable)](https://docs.godotengine.org/en/stable/classes/class_transform3d.html)
 #[derive(Default, Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Transform3D {
     /// The basis is a matrix containing 3 vectors as its columns. They can be

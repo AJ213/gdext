@@ -46,6 +46,7 @@ use std::ops::{Mul, MulAssign};
 /// [`Basis` (stable)](https://docs.godotengine.org/en/stable/classes/class_basis.html)
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Basis {
     /// The rows of the matrix. These are *not* the basis vectors.  

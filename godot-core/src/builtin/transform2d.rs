@@ -51,6 +51,7 @@ use std::ops::{Mul, MulAssign};
 /// [`Transform2D` (stable)](https://docs.godotengine.org/en/stable/classes/class_transform2d.html)
 #[derive(Default, Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Transform2D {
     /// The first basis vector.

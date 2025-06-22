@@ -32,6 +32,7 @@ use crate::builtin::{real, Rect2i, Side, Vector2};
 /// [`Rect2` (stable)](https://docs.godotengine.org/en/stable/classes/class_rect2.html)
 #[derive(Default, Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
 #[repr(C)]
 pub struct Rect2 {
     pub position: Vector2,
