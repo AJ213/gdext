@@ -10,9 +10,80 @@ Cutting-edge API docs of the `master` branch are available [here](https://godot-
 
 ## Quick navigation
 
-- [v0.3.0](#v030), [v0.3.1](#v031)
+- [v0.3.0](#v030), [v0.3.1](#v031), [v0.3.2](#v032), [v0.3.3](#v033), [v0.3.4](#v034)
 - [v0.2.0](#v020), [v0.2.1](#v021), [v0.2.2](#v022), [v0.2.3](#v023), [v0.2.4](#v024)
 - [v0.1.1](#v011), [v0.1.2](#v012), [v0.1.3](#v013)
+
+
+## [v0.3.4](https://docs.rs/godot/0.3.4)
+
+_22 July 2025_
+
+### 🧹 Quality of life
+
+- Derive `Hash` for `Rect2i` and a few enums ([#1241](https://github.com/godot-rust/gdext/pull/1241))
+- Emit proper compile error while trying to `#[export]` `Gd<T>` or `DynGd<T, D>` ([#1243](https://github.com/godot-rust/gdext/pull/1243))
+
+### 🛠️ Bugfixes
+
+- Re-export deprecated `dict!` macro ([#1247](https://github.com/godot-rust/gdext/pull/1247))
+
+
+## [v0.3.3](https://docs.rs/godot/0.3.3)
+
+_21 July 2025_
+
+### 🌻 Features
+
+- `match_class!` macro to dispatch subclasses ([#1225](https://github.com/godot-rust/gdext/pull/1225))
+  - Simplify `match_class!` syntax + implementation ([#1237](https://github.com/godot-rust/gdext/pull/1237))
+  - Support `mut` bindings in `match_class!` ([#1242](https://github.com/godot-rust/gdext/pull/1242))
+- Type-safe `call_deferred` alternative ([#1204](https://github.com/godot-rust/gdext/pull/1204))
+- Access all enum/bitfield values programmatically ([#1232](https://github.com/godot-rust/gdext/pull/1232))
+
+### 🧹 Quality of life
+
+- Start phasing out `dict!` macro in favor of `vdict!` ([#1234](https://github.com/godot-rust/gdext/pull/1234))
+- `RawGd` casting is now simpler and safer ([#1226](https://github.com/godot-rust/gdext/pull/1226))
+- Improve `Debug` impl for objects ([#1227](https://github.com/godot-rust/gdext/pull/1227))
+- Verify that panic messages support UTF-8 ([#1229](https://github.com/godot-rust/gdext/pull/1229))
+- Clarify lifetimes: `GdRef<T>` -> `GdRef<'_, T>` ([#1238](https://github.com/godot-rust/gdext/pull/1238))
+
+### 📚 Documentation
+
+- Update editor plugin docs ([#1233](https://github.com/godot-rust/gdext/pull/1233))
+- Document how to use custom getters/setters with the `OnEditor<T>` ([#1240](https://github.com/godot-rust/gdext/pull/1240))
+- Clarify `Export` semantics for objects ([#1244](https://github.com/godot-rust/gdext/pull/1244))
+
+
+## [v0.3.2](https://docs.rs/godot/0.3.2)
+
+_3 July 2025_
+
+### 🌻 Features
+
+- `vslice![a, b]` for variant slices ([#1191](https://github.com/godot-rust/gdext/pull/1191))
+- Disconnection of type-safe signals ([#1198](https://github.com/godot-rust/gdext/pull/1198))
+- Callables linked to objects; let Godot auto-disconnect signals ([#1223](https://github.com/godot-rust/gdext/pull/1223))
+
+### 🧹 Quality of life
+
+- Implement `Debug` for `OnEditor` ([#1189](https://github.com/godot-rust/gdext/pull/1189))
+- `Color`: const constructors, add `ALL_GODOT_COLORS` constant ([#1194](https://github.com/godot-rust/gdext/pull/1194))
+- Deny manual `init()` if `#[class(init|no_init)]` is present ([#1196](https://github.com/godot-rust/gdext/pull/1196))
+- Relaxed Variant conversions ([#1201](https://github.com/godot-rust/gdext/pull/1201))
+- Allow custom types to be passed as `impl AsArg<T>` ([#1193](https://github.com/godot-rust/gdext/pull/1193))
+- Verify that marshalling errors cause failed *GDScript* function ([#1203](https://github.com/godot-rust/gdext/pull/1203))
+- Inline most string interpolations (`cargo +nightly clippy --fix --workspace`) ([#1206](https://github.com/godot-rust/gdext/pull/1206))
+- Work around breaking change in GDExtension API (`VisualShader` class) ([#1210](https://github.com/godot-rust/gdext/pull/1210))
+- Allow `clippy::uninlined_format_args` (Rust 1.88) ([#1222](https://github.com/godot-rust/gdext/pull/1222))
+
+### 🛠️ Bugfixes
+
+- Fix inaccurate `Color` constants ([#1195](https://github.com/godot-rust/gdext/pull/1195))
+- Make hot-reload work with `#[class(no_init)]` ([#1197](https://github.com/godot-rust/gdext/pull/1197))
+- Wasm registration fn names now based on crate name + index ([#1205](https://github.com/godot-rust/gdext/pull/1205))
+- Fixed bug causing `ConnectHandle::is_connected()` to sometimes panic ([#1212](https://github.com/godot-rust/gdext/pull/1212))
 
 
 ## [v0.3.1](https://docs.rs/godot/0.3.1)

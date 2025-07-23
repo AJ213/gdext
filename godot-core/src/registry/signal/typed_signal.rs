@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::ops::DerefMut;
 
+// TODO(v0.4): find more general name for trait.
 /// Object part of the signal receiver (handler).
 ///
 /// Functionality overlaps partly with [`meta::AsObjectArg`] and [`meta::AsArg<ObjectArg>`]. Can however not directly be replaced
@@ -84,7 +85,7 @@ impl<'c, C: WithSignals, Ps: meta::ParamTuple> TypedSignal<'c, C, Ps> {
         let obj = obj.take().unwrap_or_else(|| {
             panic!(
                 "signals().{signal_name}() call failed; signals() allows only one signal configuration at a time \n\
-                see https://godot-rust.github.io/book/register/signals.html#one-signal-at-a-time"
+                see https://godot-rust.github.io/book/register/signals.html#admonition-one-signal-at-a-time"
             )
         });
 
@@ -132,16 +133,19 @@ impl<'c, C: WithSignals, Ps: meta::ParamTuple> TypedSignal<'c, C, Ps> {
         });
     }
 
-    /// Directly connect a Rust callable `godot_fn`, with a name based on `F`.
+    /// Directly connect a Rust callable `godot_fn`, with a name based on `F` bound to given object.
+    ///
+    /// Signal will be automatically disconnected by Godot after bound object will be freed.
     ///
     /// This exists as a shorthand for the connect methods on [`TypedSignal`] and avoids the generic instantiation of the full-blown
     /// type state builder for simple + common connections, thus hopefully being a tiny bit lighter on compile times.
     fn inner_connect_godot_fn<F>(
         &self,
         godot_fn: impl FnMut(&[&Variant]) -> Result<Variant, ()> + 'static,
+        bound: &Gd<impl GodotClass>,
     ) -> ConnectHandle {
         let callable_name = make_callable_name::<F>();
-        let callable = Callable::from_local_fn(&callable_name, godot_fn);
+        let callable = bound.linked_callable(&callable_name, godot_fn);
         self.inner_connect_untyped(callable, None)
     }
 
@@ -197,7 +201,7 @@ impl<C: WithSignals, Ps: InParamTuple + 'static> TypedSignal<'_, C, Ps> {
                 .call((), args);
         });
 
-        self.inner_connect_godot_fn::<F>(godot_fn)
+        self.inner_connect_godot_fn::<F>(godot_fn, &self.receiver_object())
     }
 
     /// Connect a method (member function) with `&mut self` as the first parameter.
@@ -219,7 +223,7 @@ impl<C: WithSignals, Ps: InParamTuple + 'static> TypedSignal<'_, C, Ps> {
                 .call(target_mut, args);
         });
 
-        self.inner_connect_godot_fn::<F>(godot_fn)
+        self.inner_connect_godot_fn::<F>(godot_fn, &self.receiver_object())
     }
 
     /// Connect a method (member function) with any `&mut OtherC` as the first parameter, where
@@ -254,6 +258,6 @@ impl<C: WithSignals, Ps: InParamTuple + 'static> TypedSignal<'_, C, Ps> {
                 .call(target_mut, args);
         });
 
-        self.inner_connect_godot_fn::<F>(godot_fn)
+        self.inner_connect_godot_fn::<F>(godot_fn, &object.to_signal_obj())
     }
 }
