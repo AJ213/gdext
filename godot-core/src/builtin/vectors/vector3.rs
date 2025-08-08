@@ -5,7 +5,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use core::cmp::Ordering;
+use std::cmp::Ordering;
+use std::fmt;
+
 use godot_ffi as sys;
 use rstar::Point;
 use sys::{ffi_methods, ExtVariantType, GodotFfi};
@@ -13,8 +15,6 @@ use sys::{ffi_methods, ExtVariantType, GodotFfi};
 use crate::builtin::math::{FloatExt, GlamConv, GlamType};
 use crate::builtin::vectors::Vector3Axis;
 use crate::builtin::{inner, real, Basis, RVec3, Vector2, Vector3i};
-
-use std::fmt;
 
 /// Vector used for 3D math using floating point coordinates.
 ///
