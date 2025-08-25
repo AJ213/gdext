@@ -290,7 +290,7 @@ unsafe impl GodotFfi for Vector3 {
     ffi_methods! { type sys::GDExtensionTypePtr = *mut Self; .. }
 }
 
-crate::meta::impl_godot_as_self!(Vector3);
+crate::meta::impl_godot_as_self!(Vector3: ByValue);
 
 impl GlamType for RVec3 {
     type Mapped = Vector3;
