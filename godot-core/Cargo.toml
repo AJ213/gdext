@@ -50,6 +50,7 @@ glam = { workspace = true }
 serde = { workspace = true, optional = true }
 bitcode = { workspace = true, optional = true }
 godot-cell = { path = "../godot-cell", version = "=0.3.4" }
+rstar = "0.12.2"
 
 [build-dependencies]
 godot-bindings = { path = "../godot-bindings", version = "=0.3.4" }

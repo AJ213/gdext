@@ -7,6 +7,7 @@
 
 use core::cmp::Ordering;
 use godot_ffi as sys;
+use rstar::Point;
 use sys::{ffi_methods, ExtVariantType, GodotFfi};
 
 use crate::builtin::math::{FloatExt, GlamConv, GlamType};
@@ -63,6 +64,37 @@ pub struct Vector3 {
 
     /// The vector's Z component.
     pub z: real,
+}
+
+impl Point for Vector3 {
+    type Scalar = real;
+    const DIMENSIONS: usize = 3;
+
+    fn generate(mut generator: impl FnMut(usize) -> Self::Scalar) -> Self {
+        Vector3 {
+            x: generator(0),
+            y: generator(1),
+            z: generator(2),
+        }
+    }
+
+    fn nth(&self, index: usize) -> Self::Scalar {
+        match index {
+            0 => self.x,
+            1 => self.y,
+            2 => self.z,
+            _ => unreachable!()
+        }
+    }
+
+    fn nth_mut(&mut self, index: usize) -> &mut Self::Scalar {
+        match index {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            2 => &mut self.z,
+            _ => unreachable!()
+        }
+    }
 }
 
 /// # Constants
