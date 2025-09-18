@@ -46,7 +46,6 @@ serde = { workspace = true, optional = true }
 bitcode = { workspace = true, optional = true }
 rstar = "0.12.2"
 godot-cell = { path = "../godot-cell", version = "=0.3.5" }
-rstar = "0.12.2"
 
 [build-dependencies]
 godot-bindings = { path = "../godot-bindings", version = "=0.3.5" }
