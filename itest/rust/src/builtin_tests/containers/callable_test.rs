@@ -73,14 +73,14 @@ fn callable_validity() {
 fn callable_hash() {
     let obj = CallableTestObj::new_gd();
     assert_eq!(
-        obj.callable("assign_int").hash(),
-        obj.callable("assign_int").hash()
+        obj.callable("assign_int").hash_u32(),
+        obj.callable("assign_int").hash_u32()
     );
 
     // Not guaranteed, but unlikely.
     assert_ne!(
-        obj.callable("assign_int").hash(),
-        obj.callable("stringify_int").hash()
+        obj.callable("assign_int").hash_u32(),
+        obj.callable("stringify_int").hash_u32()
     );
 }
 
@@ -140,7 +140,7 @@ fn callable_variant_method() {
 #[itest]
 #[cfg(since_api = "4.4")]
 fn callable_static() {
-    let callable = Callable::from_local_static("CallableTestObj", "concat_array");
+    let callable = Callable::from_class_static("CallableTestObj", "concat_array");
 
     assert_eq!(callable.object(), None);
     assert_eq!(callable.object_id(), None);
@@ -170,7 +170,7 @@ fn callable_static() {
 #[itest]
 #[cfg(since_api = "4.4")]
 fn callable_static_bind() {
-    let callable = Callable::from_local_static("CallableTestObj", "concat_array");
+    let callable = Callable::from_class_static("CallableTestObj", "concat_array");
     assert!(callable.is_valid());
 
     // Test varying binds to static callables.
@@ -382,8 +382,8 @@ pub mod custom_callable {
     use crate::framework::{assert_eq_self, quick_thread, suppress_panic_log, ThreadCrosser};
 
     #[itest]
-    fn callable_from_local_fn() {
-        let callable = Callable::from_local_fn("sum", sum);
+    fn callable_from_fn() {
+        let callable = Callable::from_fn("sum", sum);
 
         assert!(callable.is_valid());
         assert!(!callable.is_null());
@@ -398,16 +398,15 @@ pub mod custom_callable {
         assert_eq!(sum2, 0.to_variant());
     }
 
-    // Without this feature, any access to the global binding from another thread fails; so the from_local_fn() cannot be tested in isolation.
+    // Without this feature, any access to the global binding from another thread fails; so the from_fn() cannot be tested in isolation.
     #[itest]
-    fn callable_from_local_fn_crossthread() {
+    fn callable_from_fn_crossthread() {
         // This static is a workaround for not being able to propagate failed `Callable` invocations as panics.
         // See note in itest callable_call() for further info.
         static GLOBAL: sys::Global<i32> = sys::Global::default();
 
-        let callable = Callable::from_local_fn("change_global", |_args| {
+        let callable = Callable::from_fn("change_global", |_args| {
             *GLOBAL.lock() = 777;
-            Ok(Variant::nil())
         });
 
         // Note that Callable itself isn't Sync/Send, so we have to transfer it unsafely.
@@ -415,16 +414,14 @@ pub mod custom_callable {
         let crosser = ThreadCrosser::new(callable);
 
         // Create separate thread and ensure calling fails.
-        // Why expect_panic for (single-threaded && Debug) but not (multi-threaded || Release) mode:
-        // - Check is only enabled in Debug, not Release.
-        // - We currently can't catch panics from Callable invocations, see above. True for both single/multi-threaded.
-        // - In single-threaded mode, there's an FFI access check which panics as soon as another thread is invoked. *This* panics.
-        // - In multi-threaded, we need to observe the effect instead (see below).
-
-        if !cfg!(feature = "experimental-threads") && cfg!(debug_assertions) {
-            // Single-threaded and Debug.
+        // Why expect_panic for (safeguards_balanced && single-threaded) but not otherwise:
+        // - In single-threaded mode with balanced safeguards, there's an FFI access check which panics when another thread is invoked.
+        // - In multi-threaded mode OR with safeguards disengaged, the callable may or may not execute, but won't panic at the FFI level.
+        // - We can't catch panics from Callable invocations yet (see above), only the FFI access panics.
+        if cfg!(safeguards_balanced) && !cfg!(feature = "experimental-threads") {
+            // Single-threaded with balanced safeguards: FFI access check will panic.
             crate::framework::expect_panic(
-                "Callable created with from_local_fn() must panic when invoked on other thread",
+                "Callable created with from_fn() must panic when invoked on other thread",
                 || {
                     quick_thread(|| {
                         let callable = unsafe { crosser.extract() };
@@ -433,18 +430,17 @@ pub mod custom_callable {
                 },
             );
         } else {
-            // Multi-threaded OR Release.
+            // Multi-threaded OR safeguards disengaged: No FFI panic, but callable may or may not execute.
             quick_thread(|| {
                 let callable = unsafe { crosser.extract() };
                 callable.callv(&varray![5]);
             });
         }
 
-        assert_eq!(
-            *GLOBAL.lock(),
-            0,
-            "Callable created with from_local_fn() must not run when invoked on other thread"
-        );
+        // Expected value depends on whether thread checks are enforced.
+        // 777: callable *is* executed on other thread.
+        let expected = if cfg!(safeguards_balanced) { 0 } else { 777 };
+        assert_eq!(*GLOBAL.lock(), expected);
     }
 
     #[itest]
@@ -469,27 +465,25 @@ pub mod custom_callable {
     }
 
     #[itest]
-    fn callable_custom_with_err() {
-        let callable_with_err =
-            Callable::from_local_fn("on_error_doesnt_crash", |_args: &[&Variant]| Err(()));
+    fn callable_from_fn_nil() {
+        let callable_with_err = Callable::from_fn("returns_nil", |_args: &[&Variant]| {});
 
-        // Causes error in Godot, but should not crash.
         assert_eq!(callable_with_err.callv(&varray![]), Variant::nil());
     }
 
     #[itest]
     fn callable_from_fn_eq() {
-        let a = Callable::from_local_fn("sum", sum);
+        let a = Callable::from_fn("sum", sum);
         let b = a.clone();
-        let c = Callable::from_local_fn("sum", sum);
+        let c = Callable::from_fn("sum", sum);
 
         assert_eq!(a, b, "same function, same instance -> equal");
         assert_ne!(a, c, "same function, different instance -> not equal");
     }
 
-    fn sum(args: &[&Variant]) -> Result<Variant, ()> {
-        let sum: i32 = args.iter().map(|arg| arg.to::<i32>()).sum();
-        Ok(sum.to_variant())
+    // Now non-Variant return type.
+    fn sum(args: &[&Variant]) -> i32 {
+        args.iter().map(|arg| arg.to::<i32>()).sum()
     }
 
     #[itest]
@@ -588,10 +582,10 @@ pub mod custom_callable {
     fn callable_callv_panic_from_fn() {
         let received = Arc::new(AtomicU32::new(0));
         let received_callable = received.clone();
-        let callable = Callable::from_local_fn("test", move |_args| {
+        let callable = Callable::from_fn("test", move |_args| {
             suppress_panic_log(|| {
                 panic!("TEST: {}", received_callable.fetch_add(1, Ordering::SeqCst))
-            })
+            });
         });
 
         assert_eq!(Variant::nil(), callable.callv(&varray![]));
@@ -620,7 +614,7 @@ pub mod custom_callable {
 
         let obj = RefCounted::new_gd();
         let signal = Signal::from_object_signal(&obj, "script_changed");
-        signal.connect(&some_callable, 0);
+        signal.connect(&some_callable);
 
         // Given Custom Callable is connected to signal
         // if callable with the very same hash is already connected.
@@ -646,7 +640,7 @@ pub mod custom_callable {
 
     #[itest]
     fn callable_from_once_fn() {
-        let callable = Callable::__once_fn("once_test", move |_| Ok(42.to_variant()));
+        let callable = Callable::__once_fn("once_test", move |_| 42.to_variant());
 
         // First call should succeed.
         let result = callable.call(&[]);
@@ -708,12 +702,12 @@ pub mod custom_callable {
     }
 
     impl RustCallable for Adder {
-        fn invoke(&mut self, args: &[&Variant]) -> Result<Variant, ()> {
+        fn invoke(&mut self, args: &[&Variant]) -> Variant {
             for arg in args {
                 self.sum += arg.to::<i32>();
             }
 
-            Ok(self.sum.to_variant())
+            self.sum.to_variant()
         }
     }
 
@@ -761,7 +755,7 @@ pub mod custom_callable {
     }
 
     impl RustCallable for PanicCallable {
-        fn invoke(&mut self, _args: &[&Variant]) -> Result<Variant, ()> {
+        fn invoke(&mut self, _args: &[&Variant]) -> Variant {
             panic!("TEST: {}", self.0.fetch_add(1, Ordering::SeqCst))
         }
     }

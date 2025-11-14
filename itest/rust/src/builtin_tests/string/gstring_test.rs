@@ -9,7 +9,7 @@ use std::collections::HashSet;
 
 use godot::builtin::{Encoding, GString, PackedStringArray};
 
-use crate::framework::{expect_debug_panic_or_release_ok, itest};
+use crate::framework::{expect_panic_or_nothing, itest};
 
 // TODO use tests from godot-rust/gdnative
 
@@ -26,11 +26,6 @@ fn string_conversion() {
     let string = String::from("some string");
     let second = GString::from(&string);
     let back = String::from(&second);
-
-    assert_eq!(string, back);
-
-    let second = GString::from(string.clone());
-    let back = String::from(second);
 
     assert_eq!(string, back);
 }
@@ -75,7 +70,7 @@ fn string_chars() {
 
     let string = String::from("ö🍎A💡");
     let string_chars: Vec<char> = string.chars().collect();
-    let gstring = GString::from(string);
+    let gstring = GString::from(&string);
 
     assert_eq!(gstring.chars(), string_chars.as_slice());
     assert_eq!(
@@ -100,7 +95,7 @@ fn string_unicode_at() {
     assert_eq!(s.unicode_at(3), '💡');
 
     // Release mode: out-of-bounds prints Godot error, but returns 0.
-    expect_debug_panic_or_release_ok("unicode_at() out-of-bounds panics", || {
+    expect_panic_or_nothing("unicode_at() out-of-bounds panics", || {
         assert_eq!(s.unicode_at(4), '\0');
     });
 }

@@ -14,7 +14,7 @@ use godot_ffi::{GodotNullableFfi, VariantType};
 
 use crate::classes;
 use crate::global::PropertyHint;
-use crate::meta::{ClassName, FromGodot, GodotConvert, GodotType, PropertyHintInfo, ToGodot};
+use crate::meta::{ClassId, FromGodot, GodotConvert, GodotType, PropertyHintInfo, ToGodot};
 use crate::obj::{EngineEnum, GodotClass};
 
 mod phantom_var;
@@ -77,12 +77,12 @@ pub trait Export: Var {
         <Self as Var>::var_hint()
     }
 
-    /// If this is a class inheriting `Node`, returns the `ClassName`; otherwise `None`.
+    /// If this is a class inheriting `Node`, returns the `ClassId`; otherwise `None`.
     ///
     /// Only overridden for `Gd<T>`, to detect erroneous exports of `Node` inside a `Resource` class.
     #[allow(clippy::wrong_self_convention)]
     #[doc(hidden)]
-    fn as_node_class() -> Option<ClassName> {
+    fn as_node_class() -> Option<ClassId> {
         None
     }
 }
@@ -236,6 +236,7 @@ pub mod export_info_functions {
     use crate::meta::{GodotType, PropertyHintInfo, PropertyInfo};
     use crate::obj::EngineEnum;
     use crate::registry::property::Export;
+    use crate::sys;
 
     /// Turn a list of variables into a comma separated string containing only the identifiers corresponding
     /// to a true boolean variable.
@@ -315,7 +316,7 @@ pub mod export_info_functions {
 
         PropertyHintInfo {
             hint: PropertyHint::RANGE,
-            hint_string: hint_string.into(),
+            hint_string: GString::from(&hint_string),
         }
     }
 
@@ -381,7 +382,7 @@ pub mod export_info_functions {
 
         PropertyHintInfo {
             hint: PropertyHint::ENUM,
-            hint_string: hint_string.into(),
+            hint_string: GString::from(&hint_string),
         }
     }
 
@@ -390,7 +391,7 @@ pub mod export_info_functions {
 
         PropertyHintInfo {
             hint: PropertyHint::EXP_EASING,
-            hint_string: hint_string.into(),
+            hint_string: GString::from(&hint_string),
         }
     }
 
@@ -414,7 +415,7 @@ pub mod export_info_functions {
 
         PropertyHintInfo {
             hint: PropertyHint::FLAGS,
-            hint_string: hint_string.into(),
+            hint_string: GString::from(&hint_string),
         }
     }
 
@@ -426,7 +427,7 @@ pub mod export_info_functions {
     ) -> PropertyHintInfo {
         let field_ty = T::Via::property_info("");
         let filter = filter.as_ref();
-        debug_assert!(is_file || filter.is_empty()); // Dir never has filter.
+        sys::strict_assert!(is_file || filter.is_empty()); // Dir never has filter.
 
         export_file_or_dir_inner(&field_ty, is_file, is_global, filter)
     }
@@ -493,7 +494,7 @@ pub mod export_info_functions {
 
         PropertyHintInfo {
             hint: PropertyHint::TYPE_STRING,
-            hint_string: format!("{hint_string}:{filter}").into(),
+            hint_string: GString::from(&format!("{hint_string}:{filter}")),
         }
     }
 

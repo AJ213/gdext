@@ -7,14 +7,27 @@
 
 //! Runtime checks and inspection of Godot classes.
 
-use crate::builtin::{GString, StringName, Variant, VariantType};
-#[cfg(debug_assertions)]
-use crate::classes::{ClassDb, Object};
-use crate::meta::CallContext;
-#[cfg(debug_assertions)]
-use crate::meta::ClassName;
+use crate::builtin::{GString, StringName, Variant};
 use crate::obj::{bounds, Bounds, Gd, GodotClass, InstanceId, RawGd};
 use crate::sys;
+
+#[cfg(safeguards_strict)]
+mod strict {
+    pub use crate::builtin::VariantType;
+    pub use crate::classes::{ClassDb, Object};
+    pub use crate::meta::ClassId;
+    pub use crate::obj::Singleton;
+}
+
+#[cfg(safeguards_balanced)]
+mod balanced {
+    pub use crate::meta::CallContext;
+}
+
+#[cfg(safeguards_balanced)]
+use balanced::*;
+#[cfg(safeguards_strict)]
+use strict::*;
 
 pub(crate) fn debug_string<T: GodotClass>(
     obj: &Gd<T>,
@@ -35,7 +48,7 @@ pub(crate) fn debug_string_variant(
     f: &mut std::fmt::Formatter<'_>,
     ty: &str,
 ) -> std::fmt::Result {
-    debug_assert_eq!(obj.get_type(), VariantType::OBJECT);
+    sys::strict_assert_eq!(obj.get_type(), VariantType::OBJECT);
 
     let id = obj
         .object_id_unchecked()
@@ -70,7 +83,7 @@ pub(crate) fn debug_string_variant(
     f: &mut std::fmt::Formatter<'_>,
     ty: &str,
 ) -> std::fmt::Result {
-    debug_assert_eq!(obj.get_type(), VariantType::OBJECT);
+    sys::strict_assert_eq!(obj.get_type(), VariantType::OBJECT);
 
     match obj.try_to::<Gd<crate::classes::Object>>() {
         Ok(obj) => {
@@ -171,7 +184,7 @@ where
     T: GodotClass + Bounds<Declarer = bounds::DeclEngine>,
 {
     let mut obj = unsafe {
-        let object_ptr = sys::classdb_construct_object(T::class_name().string_sys());
+        let object_ptr = sys::classdb_construct_object(T::class_id().string_sys());
         Gd::<T>::from_obj_sys(object_ptr)
     };
     #[cfg(since_api = "4.4")]
@@ -181,6 +194,23 @@ where
     obj
 }
 
+/// # Safety
+/// The caller must ensure that `class_name` corresponds to the actual class name of type `T`.
+pub(crate) unsafe fn singleton_unchecked<T>(class_name: &StringName) -> Gd<T>
+where
+    T: GodotClass,
+{
+    let object_ptr = unsafe { sys::interface_fn!(global_get_singleton)(class_name.string_sys()) };
+    Gd::<T>::from_obj_sys(object_ptr)
+}
+
+/// Checks that the object with the given instance ID is still alive and that the pointer is valid.
+///
+/// This does **not** perform type checking — use `ensure_object_type()` for that.
+///
+/// # Panics (balanced+strict safeguards)
+/// If the object has been freed or the instance ID points to a different object.
+#[cfg(safeguards_balanced)]
 pub(crate) fn ensure_object_alive(
     instance_id: InstanceId,
     old_object_ptr: sys::GDExtensionObjectPtr,
@@ -201,10 +231,10 @@ pub(crate) fn ensure_object_alive(
     );
 }
 
-#[cfg(debug_assertions)]
-pub(crate) fn ensure_object_inherits(derived: ClassName, base: ClassName, instance_id: InstanceId) {
+#[cfg(safeguards_strict)]
+pub(crate) fn ensure_object_inherits(derived: ClassId, base: ClassId, instance_id: InstanceId) {
     if derived == base
-        || base == Object::class_name() // for Object base, anything inherits by definition
+        || base == Object::class_id() // for Object base, anything inherits by definition
         || is_derived_base_cached(derived, base)
     {
         return;
@@ -216,7 +246,7 @@ pub(crate) fn ensure_object_inherits(derived: ClassName, base: ClassName, instan
     )
 }
 
-#[cfg(debug_assertions)]
+#[cfg(safeguards_strict)]
 pub(crate) fn ensure_binding_not_null<T>(binding: sys::GDExtensionClassInstancePtr)
 where
     T: GodotClass + Bounds<Declarer = bounds::DeclUser>,
@@ -244,13 +274,13 @@ where
 // Implementation of this file
 
 /// Checks if `derived` inherits from `base`, using a cache for _successful_ queries.
-#[cfg(debug_assertions)]
-fn is_derived_base_cached(derived: ClassName, base: ClassName) -> bool {
+#[cfg(safeguards_strict)]
+fn is_derived_base_cached(derived: ClassId, base: ClassId) -> bool {
     use std::collections::HashSet;
 
     use sys::Global;
 
-    static CACHE: Global<HashSet<(ClassName, ClassName)>> = Global::default();
+    static CACHE: Global<HashSet<(ClassId, ClassId)>> = Global::default();
 
     let mut cache = CACHE.lock();
     let key = (derived, base);

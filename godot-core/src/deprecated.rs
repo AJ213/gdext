@@ -37,11 +37,13 @@ pub use crate::emit_deprecated_warning;
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // Library-side deprecations -- see usage description above.
 
-// ----------------------------------------------------------------------------------------------------------------------------------------------
-// Godot-side deprecations
+#[deprecated = "\n\
+    #[class(no_init, base=EditorPlugin)] will crash when opened in the editor.\n\
+    EditorPlugin classes are automatically instantiated by Godot and require a default constructor.\n\
+    Use #[class(init)] instead, or provide a custom init() function in the IEditorPlugin impl."]
+pub const fn class_no_init_editor_plugin() {}
 
-// This is a Godot-side deprecation. Since it's the only way in Godot 4.1, we keep compatibility for now.
-// TODO(v0.4): remove with error.
-#[deprecated = "\nUse #[export(range = (radians_as_degrees))] and not #[export(range = (radians))].\n\
-	More information on https://github.com/godotengine/godot/pull/82195."]
-pub const fn export_range_radians() {}
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+// Godot-side deprecations (we may mark them deprecated but keep support).
+
+// Past removals: `radians` in #[export(range)].

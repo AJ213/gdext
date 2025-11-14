@@ -10,6 +10,8 @@
 // for these signals, and integration is slightly different due to lack of WithBaseField trait. Nonetheless, some parts could potentially
 // be extracted into a future crate shared by godot-codegen and godot-macros.
 
+// TODO(v0.5): signal parameters are Gd<T> instead of conservatively Option<Gd<T>>, which is a bug.
+
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
@@ -291,9 +293,10 @@ impl SignalParams {
         for param in params.iter() {
             let param_name = safe_ident(&param.name.to_string());
             let param_ty = &param.type_;
+            let param_ty_tokens = param_ty.tokens_non_null();
 
-            param_list.extend(quote! { #param_name: #param_ty, });
-            type_list.extend(quote! { #param_ty, });
+            param_list.extend(quote! { #param_name: #param_ty_tokens, });
+            type_list.extend(quote! { #param_ty_tokens, });
             name_list.extend(quote! { #param_name, });
 
             let formatted_ty = match param_ty {

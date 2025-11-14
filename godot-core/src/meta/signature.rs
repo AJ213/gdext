@@ -9,17 +9,16 @@ use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
 
-use godot_ffi::{self as sys, GodotFfi};
+use godot_ffi as sys;
+use sys::GodotFfi;
 
 use crate::builtin::Variant;
-use crate::meta::error::{CallError, ConvertError};
+use crate::meta::error::{CallError, CallResult, ConvertError};
 use crate::meta::{
     FromGodot, GodotConvert, GodotType, InParamTuple, MethodParamOrReturnInfo, OutParamTuple,
     ParamTuple, ToGodot,
 };
-use crate::obj::{GodotClass, InstanceId};
-
-pub(super) type CallResult<R> = Result<R, CallError>;
+use crate::obj::{GodotClass, ValidatedObject};
 
 /// A full signature for a function.
 ///
@@ -62,26 +61,29 @@ where
     /// Receive a varcall from Godot, and return the value in `ret` as a variant pointer.
     ///
     /// # Safety
-    ///
     /// A call to this function must be caused by Godot making a varcall with parameters `Params` and return type `Ret`.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn in_varcall(
         instance_ptr: sys::GDExtensionClassInstancePtr,
         call_ctx: &CallContext,
         args_ptr: *const sys::GDExtensionConstVariantPtr,
         arg_count: i64,
+        default_values: &[Variant],
         ret: sys::GDExtensionVariantPtr,
         err: *mut sys::GDExtensionCallError,
         func: unsafe fn(sys::GDExtensionClassInstancePtr, Params) -> Ret,
     ) -> CallResult<()> {
         //$crate::out!("in_varcall: {call_ctx}");
-        CallError::check_arg_count(call_ctx, arg_count as usize, Params::LEN)?;
+        let arg_count = arg_count as usize;
+        CallError::check_arg_count(call_ctx, arg_count, default_values.len(), Params::LEN)?;
 
         #[cfg(feature = "trace")]
         trace::push(true, false, call_ctx);
 
         // SAFETY: TODO.
-        let args = unsafe { Params::from_varcall_args(args_ptr, call_ctx)? };
+        let args =
+            unsafe { Params::from_varcall_args(args_ptr, arg_count, default_values, call_ctx)? };
 
         let rust_result = unsafe { func(instance_ptr, args) };
         // SAFETY: TODO.
@@ -102,19 +104,21 @@ where
         ret: sys::GDExtensionTypePtr,
         func: fn(sys::GDExtensionClassInstancePtr, Params) -> Ret,
         call_type: sys::PtrcallType,
-    ) {
+    ) -> CallResult<()> {
         // $crate::out!("in_ptrcall: {call_ctx}");
 
         #[cfg(feature = "trace")]
         trace::push(true, true, call_ctx);
 
         // SAFETY: TODO.
-        let args = unsafe { Params::from_ptrcall_args(args_ptr, call_type, call_ctx) };
+        let args = unsafe { Params::from_ptrcall_args(args_ptr, call_type, call_ctx)? };
 
         // SAFETY:
         // `ret` is always a pointer to an initialized value of type $R
         // TODO: double-check the above
-        unsafe { ptrcall_return::<Ret>(func(instance_ptr, args), ret, call_ctx, call_type) }
+        unsafe { ptrcall_return::<Ret>(func(instance_ptr, args), ret, call_ctx, call_type) };
+
+        Ok(())
     }
 }
 
@@ -126,8 +130,6 @@ impl<Params: OutParamTuple, Ret: FromGodot> Signature<Params, Ret> {
     /// Make a varcall to the Godot engine for a class method.
     ///
     /// # Safety
-    ///
-    /// - `object_ptr` must be a live instance of a class with the type expected by `method_bind`
     /// - `method_bind` must expect explicit args `args`, varargs `varargs`, and return a value of type `Ret`
     #[inline]
     pub unsafe fn out_class_varcall(
@@ -135,18 +137,12 @@ impl<Params: OutParamTuple, Ret: FromGodot> Signature<Params, Ret> {
         // Separate parameters to reduce tokens in generated class API.
         class_name: &'static str,
         method_name: &'static str,
-        object_ptr: sys::GDExtensionObjectPtr,
-        maybe_instance_id: Option<InstanceId>, // if not static
+        validated_obj: Option<ValidatedObject>,
         args: Params,
         varargs: &[Variant],
     ) -> CallResult<Ret> {
         let call_ctx = CallContext::outbound(class_name, method_name);
         //$crate::out!("out_class_varcall: {call_ctx}");
-
-        // Note: varcalls are not safe from failing, if they happen through an object pointer -> validity check necessary.
-        if let Some(instance_id) = maybe_instance_id {
-            crate::classes::ensure_object_alive(instance_id, object_ptr, &call_ctx);
-        }
 
         let class_fn = sys::interface_fn!(object_method_bind_call);
 
@@ -160,7 +156,7 @@ impl<Params: OutParamTuple, Ret: FromGodot> Signature<Params, Ret> {
                     let mut err = sys::default_call_error();
                     class_fn(
                         method_bind.0,
-                        object_ptr,
+                        ValidatedObject::object_ptr(validated_obj.as_ref()),
                         variant_ptrs.as_ptr(),
                         variant_ptrs.len() as i64,
                         return_ptr,
@@ -288,8 +284,6 @@ impl<Params: OutParamTuple, Ret: FromGodot> Signature<Params, Ret> {
     /// Make a ptrcall to the Godot engine for a class method.
     ///
     /// # Safety
-    ///
-    /// - `object_ptr` must be a live instance of a class with the type expected by `method_bind`
     /// - `method_bind` must expect explicit args `args`, and return a value of type `Ret`
     #[inline]
     pub unsafe fn out_class_ptrcall(
@@ -297,16 +291,11 @@ impl<Params: OutParamTuple, Ret: FromGodot> Signature<Params, Ret> {
         // Separate parameters to reduce tokens in generated class API.
         class_name: &'static str,
         method_name: &'static str,
-        object_ptr: sys::GDExtensionObjectPtr,
-        maybe_instance_id: Option<InstanceId>, // if not static
+        validated_obj: Option<ValidatedObject>,
         args: Params,
     ) -> Ret {
         let call_ctx = CallContext::outbound(class_name, method_name);
         // $crate::out!("out_class_ptrcall: {call_ctx}");
-
-        if let Some(instance_id) = maybe_instance_id {
-            crate::classes::ensure_object_alive(instance_id, object_ptr, &call_ctx);
-        }
 
         let class_fn = sys::interface_fn!(object_method_bind_ptrcall);
 
@@ -314,7 +303,7 @@ impl<Params: OutParamTuple, Ret: FromGodot> Signature<Params, Ret> {
             Self::raw_ptrcall(args, &call_ctx, |explicit_args, return_ptr| {
                 class_fn(
                     method_bind.0,
-                    object_ptr,
+                    ValidatedObject::object_ptr(validated_obj.as_ref()),
                     explicit_args.as_ptr(),
                     return_ptr,
                 );
@@ -470,7 +459,7 @@ impl<'a> CallContext<'a> {
     }
 
     /// Call from Godot into a custom Callable.
-    pub fn custom_callable(function_name: &'a str) -> Self {
+    pub const fn custom_callable(function_name: &'a str) -> Self {
         Self {
             class_name: Cow::Borrowed("<Callable>"),
             function_name,
@@ -488,7 +477,7 @@ impl<'a> CallContext<'a> {
     /// Outbound call from Rust into the engine, via Gd methods.
     pub fn gd<T: GodotClass>(function_name: &'a str) -> Self {
         Self {
-            class_name: T::class_name().to_cow_str(),
+            class_name: T::class_id().to_cow_str(),
             function_name,
         }
     }

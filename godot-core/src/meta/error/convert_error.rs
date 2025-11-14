@@ -11,7 +11,7 @@ use std::fmt;
 use godot_ffi::VariantType;
 
 use crate::builtin::Variant;
-use crate::meta::{ClassName, ElementType, ToGodot};
+use crate::meta::{ClassId, ElementType, ToGodot};
 
 type Cause = Box<dyn Error + Send + Sync>;
 
@@ -171,7 +171,10 @@ impl fmt::Display for ErrorKind {
             Self::FromGodot(from_godot) => write!(f, "{from_godot}"),
             Self::FromVariant(from_variant) => write!(f, "{from_variant}"),
             Self::FromFfi(from_ffi) => write!(f, "{from_ffi}"),
-            Self::Custom(cause) => write!(f, "{cause:?}"),
+            Self::Custom(cause) => match cause {
+                Some(c) => write!(f, "{c}"),
+                None => write!(f, "custom error"),
+            },
         }
     }
 }
@@ -186,7 +189,7 @@ pub(crate) enum FromGodotError {
     },
 
     /// Special case of `BadArrayType` where a custom int type such as `i8` cannot hold a dynamic `i64` value.
-    #[cfg(debug_assertions)]
+    #[cfg(safeguards_strict)]
     BadArrayTypeInt {
         expected_int_type: &'static str,
         value: i64,
@@ -231,7 +234,7 @@ impl fmt::Display for FromGodotError {
 
                 write!(f, "expected array of type {exp_class}, got {act_class}")
             }
-            #[cfg(debug_assertions)]
+            #[cfg(safeguards_strict)]
             Self::BadArrayTypeInt {
                 expected_int_type,
                 value,
@@ -318,7 +321,7 @@ pub(crate) enum FromVariantError {
     BadValue,
 
     WrongClass {
-        expected: ClassName,
+        expected: ClassId,
     },
 
     /// Variant holds an object which is no longer alive.

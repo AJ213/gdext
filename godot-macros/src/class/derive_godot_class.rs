@@ -52,35 +52,30 @@ pub fn derive_godot_class(item: venial::Item) -> ParseResult<TokenStream> {
     let class_name = &class.name;
     let class_name_str: String = struct_cfg
         .rename
-        .map_or_else(|| class.name.clone(), |rename| rename)
+        .unwrap_or_else(|| class.name.clone())
         .to_string();
 
-    // Determine if we can use ASCII for the class name (in most cases).
-    // Crate godot-macros does not have knowledge of `api-*` features (and neither does user crate where macros are generated),
-    // so we can't cause a compile error if Unicode is used before Godot 4.4. However, this causes a runtime error at startup.
-    let class_name_allocation = if class_name_str.is_ascii() {
-        let c_str = util::c_str(&class_name_str);
-        quote! { ClassName::__alloc_next_ascii(#c_str) }
-    } else {
-        quote! { ClassName::__alloc_next_unicode(#class_name_str) }
-    };
+    let class_name_allocation = quote! { ClassId::__alloc_next_unicode(#class_name_str) };
 
     if struct_cfg.is_internal {
         modifiers.push(quote! { with_internal })
     }
     let base_ty = &struct_cfg.base_ty;
-    #[cfg(all(feature = "register-docs", since_api = "4.3"))]
-    let docs =
-        crate::docs::document_struct(base_ty.to_string(), &class.attributes, &fields.all_fields);
-    #[cfg(not(all(feature = "register-docs", since_api = "4.3")))]
-    let docs = quote! {};
+    let prv = quote! { ::godot::private };
+
+    let struct_docs_registration = crate::docs::make_struct_docs_registration(
+        base_ty.to_string(),
+        &class.attributes,
+        &fields.all_fields,
+        class_name,
+        &prv,
+    );
     let base_class = quote! { ::godot::classes::#base_ty };
 
     // Use this name because when typing a non-existent class, users will be met with the following error:
     //    could not find `inherit_from_OS__ensure_class_exists` in `class_macros`.
     let inherits_macro_ident = format_ident!("inherit_from_{}__ensure_class_exists", base_ty);
 
-    let prv = quote! { ::godot::private };
     let godot_exports_impl = make_property_impl(class_name, &fields);
 
     let godot_withbase_impl = if let Some(Field { name, ty, .. }) = &fields.base_field {
@@ -104,8 +99,12 @@ pub fn derive_godot_class(item: venial::Item) -> ParseResult<TokenStream> {
         TokenStream::new()
     };
 
-    let (user_class_impl, has_default_virtual) =
-        make_user_class_impl(class_name, struct_cfg.is_tool, &fields.all_fields);
+    let (user_class_impl, has_default_virtual) = make_user_class_impl(
+        class_name,
+        &struct_cfg.base_ty,
+        struct_cfg.is_tool,
+        &fields.all_fields,
+    );
 
     let mut init_expecter = TokenStream::new();
     let mut godot_init_impl = TokenStream::new();
@@ -166,14 +165,14 @@ pub fn derive_godot_class(item: venial::Item) -> ParseResult<TokenStream> {
             type Base = #base_class;
 
             // Code duplicated in godot-codegen.
-            fn class_name() -> ::godot::meta::ClassName {
-                use ::godot::meta::ClassName;
+            fn class_id() -> ::godot::meta::ClassId {
+                use ::godot::meta::ClassId;
 
                 // Optimization note: instead of lazy init, could use separate static which is manually initialized during registration.
-                static CLASS_NAME: std::sync::OnceLock<ClassName> = std::sync::OnceLock::new();
+                static CLASS_ID: std::sync::OnceLock<ClassId> = std::sync::OnceLock::new();
 
-                let name: &'static ClassName = CLASS_NAME.get_or_init(|| #class_name_allocation);
-                *name
+                let id: &'static ClassId = CLASS_ID.get_or_init(|| #class_name_allocation);
+                *id
             }
         }
 
@@ -196,9 +195,10 @@ pub fn derive_godot_class(item: venial::Item) -> ParseResult<TokenStream> {
         #( #deprecations )*
         #( #errors )*
 
+        #struct_docs_registration
         ::godot::sys::plugin_add!(#prv::__GODOT_PLUGIN_REGISTRY; #prv::ClassPlugin::new::<#class_name>(
             #prv::PluginItem::Struct(
-                #prv::Struct::new::<#class_name>(#docs)#(.#modifiers())*
+                #prv::Struct::new::<#class_name>()#(.#modifiers())*
             )
         ));
 
@@ -290,7 +290,7 @@ pub fn make_existence_check(ident: &Ident) -> TokenStream {
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // Implementation
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 enum InitStrategy {
     Generated,
     UserDefined,
@@ -369,7 +369,7 @@ fn make_onready_init(all_fields: &[Field]) -> TokenStream {
 
 fn make_oneditor_panic_inits(class_name: &Ident, all_fields: &[Field]) -> TokenStream {
     // Despite its name OnEditor shouldn't panic in the editor for tool classes.
-    let is_in_editor = quote! { ::godot::classes::Engine::singleton().is_editor_hint() };
+    let is_in_editor = quote! { <::godot::classes::Engine as ::godot::obj::Singleton>::singleton().is_editor_hint() };
 
     let are_all_oneditor_fields_valid = quote! { are_all_oneditor_fields_valid };
 
@@ -393,6 +393,8 @@ fn make_oneditor_panic_inits(class_name: &Ident, all_fields: &[Field]) -> TokenS
 
     if !on_editor_fields_checks.is_empty() {
         quote! {
+            // Triggers `clippy::useless_let_if_seq` lint if only one `#on_editor_fields_checks` is present.
+            #[allow(clippy::useless_let_if_seq)]
             fn __are_oneditor_fields_initalized(this: &#class_name) -> bool {
                 // Early return for `#[class(tool)]`.
                 if #is_in_editor {
@@ -417,6 +419,7 @@ fn make_oneditor_panic_inits(class_name: &Ident, all_fields: &[Field]) -> TokenS
 
 fn make_user_class_impl(
     class_name: &Ident,
+    trait_base_class: &Ident,
     is_tool: bool,
     all_fields: &[Field],
 ) -> (TokenStream, bool) {
@@ -427,7 +430,6 @@ fn make_user_class_impl(
     let rpc_registrations = TokenStream::new();
 
     let onready_inits = make_onready_init(all_fields);
-
     let oneditor_panic_inits = make_oneditor_panic_inits(class_name, all_fields);
 
     let run_before_ready = !onready_inits.is_empty() || !oneditor_panic_inits.is_empty();
@@ -436,8 +438,13 @@ fn make_user_class_impl(
         let tool_check = util::make_virtual_tool_check();
         let signature_info = SignatureInfo::fn_ready();
 
-        let callback =
-            make_virtual_callback(class_name, &signature_info, BeforeKind::OnlyBefore, None);
+        let callback = make_virtual_callback(
+            class_name,
+            trait_base_class,
+            &signature_info,
+            BeforeKind::OnlyBefore,
+            None,
+        );
 
         // See also __virtual_call() codegen.
         // This doesn't explicitly check if the base class inherits from Node (and thus has `_ready`), but the derive-macro already does
@@ -446,7 +453,7 @@ fn make_user_class_impl(
         if cfg!(since_api = "4.4") {
             hash_param = quote! { hash: u32, };
             matches_ready_hash = quote! {
-                (name, hash) == ::godot::sys::godot_virtual_consts::Node::ready
+                (name, hash) == ::godot::private::virtuals::Node::ready
             };
         } else {
             hash_param = TokenStream::new();
@@ -524,11 +531,12 @@ fn parse_struct_attributes(class: &venial::Struct) -> ParseResult<ClassAttribute
             is_tool = true;
         }
 
-        // Deprecated #[class(editor_plugin)]
-        if let Some(_attr_key) = parser.handle_alone_with_span("editor_plugin")? {
-            deprecations.push(quote_spanned! { _attr_key.span()=>
-                ::godot::__deprecated::emit_deprecated_warning!(class_editor_plugin);
-            });
+        // Removed #[class(editor_plugin)]
+        if let Some(key) = parser.handle_alone_with_span("editor_plugin")? {
+            return bail!(
+                key,
+                "#[class(editor_plugin)] has been removed in favor of #[class(tool, base=EditorPlugin)]",
+            );
         }
 
         // #[class(rename = NewName)]
@@ -549,16 +557,22 @@ fn parse_struct_attributes(class: &venial::Struct) -> ParseResult<ClassAttribute
             }
         }
 
-        // Deprecated #[class(hidden)]
-        if let Some(ident) = parser.handle_alone_with_span("hidden")? {
-            is_internal = true;
-
-            deprecations.push(quote_spanned! { ident.span()=>
-                ::godot::__deprecated::emit_deprecated_warning!(class_hidden);
-            });
+        // Removed #[class(hidden)]
+        if let Some(key) = parser.handle_alone_with_span("hidden")? {
+            return bail!(
+                key,
+                "#[class(hidden)] has been renamed to #[class(internal)]",
+            );
         }
 
         parser.finish()?;
+    }
+
+    // Deprecated: #[class(no_init)] with base=EditorPlugin
+    if matches!(init_strategy, InitStrategy::Absent) && base_ty == ident("EditorPlugin") {
+        deprecations.push(quote! {
+            ::godot::__deprecated::emit_deprecated_warning!(class_no_init_editor_plugin);
+        });
     }
 
     post_validate(&base_ty, is_tool)?;
@@ -580,6 +594,7 @@ fn parse_fields(
 ) -> ParseResult<Fields> {
     let mut all_fields = vec![];
     let mut base_field = Option::<Field>::None;
+    #[allow(unused_mut)] // Less chore when adding/removing deprecations.
     let mut deprecations = vec![];
     let mut errors = vec![];
 
@@ -626,21 +641,12 @@ fn parse_fields(
                 });
             }
 
-            // Deprecated #[init(default = expr)]
-            if let Some((key, default)) = parser.handle_expr_with_key("default")? {
-                if field.default_val.is_some() {
-                    return bail!(
-                        key,
-                        "Cannot use both `val` and `default` keys in #[init]; prefer using `val`"
-                    );
-                }
-                field.default_val = Some(FieldDefault {
-                    default_val: default,
-                    span: parser.span(),
-                });
-                deprecations.push(quote_spanned! { parser.span()=>
-                    ::godot::__deprecated::emit_deprecated_warning!(init_default);
-                })
+            // Removed #[init(default = ...)]
+            if let Some((key, _default)) = parser.handle_expr_with_key("default")? {
+                return bail!(
+                    key,
+                    "#[init(default = ...)] has been renamed to #[init(val = ...)]",
+                );
             }
 
             // #[init(node = "PATH")]

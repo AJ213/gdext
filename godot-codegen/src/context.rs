@@ -252,6 +252,14 @@ impl<'a> Context<'a> {
             .unwrap_or_else(|| panic!("did not register table index for key {key:?}"))
     }
 
+    /// Yields cached sys pointer types – various pointer types declared in `gdextension_interface`
+    /// and used as parameters in exposed Godot APIs.
+    pub fn cached_sys_pointer_types(&self) -> impl Iterator<Item = &RustTy> {
+        self.cached_rust_types
+            .values()
+            .filter(|rust_ty| rust_ty.is_sys_pointer())
+    }
+
     /// Whether an interface trait is generated for a class.
     ///
     /// False if the class is "Godot-abstract"/final, thus there are no virtual functions to inherit.

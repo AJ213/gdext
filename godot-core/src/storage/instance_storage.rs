@@ -16,7 +16,7 @@ use godot_cell::panicking::{InaccessibleGuard, MutGuard, RefGuard};
 use godot_ffi as sys;
 
 use crate::godot_error;
-use crate::obj::{Base, Gd, GodotClass, Inherits};
+use crate::obj::{Base, Gd, GodotClass, Inherits, Singleton};
 use crate::storage::log_pre_drop;
 
 #[derive(Copy, Clone, Debug)]
@@ -287,7 +287,7 @@ pub unsafe fn destroy_storage<T: GodotClass>(instance_ptr: sys::GDExtensionClass
     //    - Letting Gd<T> and InstanceStorage<T> know about this specific object state and panicking in the next Rust call might be an option,
     //      but we still can't control direct access to the T.
     //
-    // For now we choose option 2 in Debug mode, and 4 in Release.
+    // For now we choose option 2 in strict+balanced levels, and 4 in disengaged level.
     let mut leak_rust_object = false;
     if (*raw).is_bound() {
         let error = format!(
@@ -298,10 +298,10 @@ pub unsafe fn destroy_storage<T: GodotClass>(instance_ptr: sys::GDExtensionClass
             (*raw).base()
         );
 
-        // In Debug mode, crash which may trigger breakpoint.
-        // In Release mode, leak player object (Godot philosophy: don't crash if somehow avoidable). Likely leads to follow-up issues.
-        if cfg!(debug_assertions) {
-            let error = crate::builtin::GString::from(error);
+        // In strict+balanced level, crash which may trigger breakpoint.
+        // In disengaged level, leak player object (Godot philosophy: don't crash if somehow avoidable). Likely leads to follow-up issues.
+        if cfg!(safeguards_balanced) {
+            let error = crate::builtin::GString::from(&error);
             crate::classes::Os::singleton().crash(&error);
         } else {
             leak_rust_object = true;

@@ -50,6 +50,7 @@ pub(crate) mod gen {
 
 pub mod conv;
 
+mod assertions;
 mod extras;
 mod global;
 mod godot_ffi;
@@ -86,8 +87,8 @@ pub use gen::table_editor_classes::*;
 pub use gen::table_scene_classes::*;
 pub use gen::table_servers_classes::*;
 pub use gen::table_utilities::*;
-pub use gen::virtual_consts as godot_virtual_consts;
 pub use global::*;
+pub use init_level::*;
 pub use string_cache::StringCache;
 pub use toolbox::*;
 
@@ -99,6 +100,7 @@ pub use crate::godot_ffi::{
 // API to access Godot via FFI
 
 mod binding;
+mod init_level;
 
 pub use binding::*;
 use binding::{
@@ -110,61 +112,37 @@ use binding::{
 #[cfg(not(wasm_nothreads))]
 static MAIN_THREAD_ID: ManualInitCell<std::thread::ThreadId> = ManualInitCell::new();
 
-/// Stage of the Godot initialization process.
-///
-/// Godot's initialization and deinitialization processes are split into multiple stages, like a stack. At each level,
-/// a different amount of engine functionality is available. Deinitialization happens in reverse order.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
-pub enum InitLevel {
-    /// First level loaded by Godot. Builtin types are available, classes are not.
-    Core,
-
-    /// Second level loaded by Godot. Only server classes and builtins are available.
-    Servers,
-
-    /// Third level loaded by Godot. Most classes are available.
-    Scene,
-
-    /// Fourth level loaded by Godot, only in the editor. All classes are available.
-    Editor,
-}
-
-impl InitLevel {
-    #[doc(hidden)]
-    pub fn from_sys(level: crate::GDExtensionInitializationLevel) -> Self {
-        match level {
-            crate::GDEXTENSION_INITIALIZATION_CORE => Self::Core,
-            crate::GDEXTENSION_INITIALIZATION_SERVERS => Self::Servers,
-            crate::GDEXTENSION_INITIALIZATION_SCENE => Self::Scene,
-            crate::GDEXTENSION_INITIALIZATION_EDITOR => Self::Editor,
-            _ => {
-                eprintln!("WARNING: unknown initialization level {level}");
-                Self::Scene
-            }
-        }
-    }
-    #[doc(hidden)]
-    pub fn to_sys(self) -> crate::GDExtensionInitializationLevel {
-        match self {
-            Self::Core => crate::GDEXTENSION_INITIALIZATION_CORE,
-            Self::Servers => crate::GDEXTENSION_INITIALIZATION_SERVERS,
-            Self::Scene => crate::GDEXTENSION_INITIALIZATION_SCENE,
-            Self::Editor => crate::GDEXTENSION_INITIALIZATION_EDITOR,
-        }
-    }
-}
+// ----------------------------------------------------------------------------------------------------------------------------------------------
 
 pub struct GdextRuntimeMetadata {
-    godot_version: GDExtensionGodotVersion,
+    version_string: String,
+    version_triple: (u8, u8, u8),
 }
 
 impl GdextRuntimeMetadata {
-    /// # Safety
-    ///
-    /// - The `string` field of `godot_version` must not be written to while this struct exists.
-    /// - The `string` field of `godot_version` must be safe to read from while this struct exists.
-    pub unsafe fn new(godot_version: GDExtensionGodotVersion) -> Self {
-        Self { godot_version }
+    pub fn load(sys_version: GDExtensionGodotVersion) -> Self {
+        // SAFETY: GDExtensionGodotVersion always contains valid string.
+        let version_string = unsafe { read_version_string(sys_version.string) };
+
+        let version_triple = (
+            sys_version.major as u8,
+            sys_version.minor as u8,
+            sys_version.patch as u8,
+        );
+
+        Self {
+            version_string,
+            version_triple,
+        }
+    }
+
+    // TODO(v0.5): CowStr, also in GdextBuild.
+    pub fn version_string(&self) -> &str {
+        &self.version_string
+    }
+
+    pub fn version_triple(&self) -> (u8, u8, u8) {
+        self.version_triple
     }
 }
 
@@ -186,10 +164,10 @@ pub unsafe fn initialize(
     library: GDExtensionClassLibraryPtr,
     config: GdextConfig,
 ) {
-    out!("Initialize gdext...");
+    out!("Initialize godot-rust...");
 
     out!(
-        "Godot version against which gdext was compiled: {}",
+        "Godot version against which godot-rust was compiled: {}",
         GdextBuild::godot_static_version_string()
     );
 
@@ -223,8 +201,7 @@ pub unsafe fn initialize(
         unsafe { UtilityFunctionTable::load(&interface, &mut string_names) };
     out!("Loaded utility function table.");
 
-    // SAFETY: We do not touch `version` again after passing it to `new` here.
-    let runtime_metadata = unsafe { GdextRuntimeMetadata::new(version) };
+    let runtime_metadata = GdextRuntimeMetadata::load(version);
 
     let builtin_method_table = {
         #[cfg(feature = "codegen-lazy-fptrs")]
@@ -284,14 +261,34 @@ pub unsafe fn initialize(
 /// # Safety
 /// See [`initialize`].
 pub unsafe fn deinitialize() {
-    deinitialize_binding()
+    deinitialize_binding();
+
+    // MACOS-PARTIAL-RELOAD: Clear the main thread ID to allow re-initialization during hot reload.
+    #[cfg(not(wasm_nothreads))]
+    {
+        if MAIN_THREAD_ID.is_initialized() {
+            MAIN_THREAD_ID.clear();
+        }
+    }
+}
+
+fn safeguards_level_string() -> &'static str {
+    if cfg!(safeguards_strict) {
+        "strict"
+    } else if cfg!(safeguards_balanced) {
+        "balanced"
+    } else {
+        "disengaged"
+    }
 }
 
 fn print_preamble(version: GDExtensionGodotVersion) {
-    let api_version: &'static str = GdextBuild::godot_static_version_string();
-    let runtime_version = read_version_string(&version);
+    // SAFETY: GDExtensionGodotVersion always contains valid string.
+    let runtime_version = unsafe { read_version_string(version.string) };
 
-    println!("Initialize godot-rust (API {api_version}, runtime {runtime_version})");
+    let api_version: &'static str = GdextBuild::godot_static_version_string();
+    let safeguards_level = safeguards_level_string();
+    println!("Initialize godot-rust (API {api_version}, runtime {runtime_version}, safeguards {safeguards_level})");
 }
 
 /// # Safety

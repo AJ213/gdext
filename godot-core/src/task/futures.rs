@@ -15,11 +15,12 @@ use std::thread::ThreadId;
 
 use crate::builtin::{Callable, RustCallable, Signal, Variant};
 use crate::classes::object::ConnectFlags;
-use crate::godot_error;
+use crate::global::godot_error;
 use crate::meta::sealed::Sealed;
 use crate::meta::InParamTuple;
-use crate::obj::{EngineBitfield, Gd, GodotClass, WithSignals};
+use crate::obj::{Gd, GodotClass, WithSignals};
 use crate::registry::signal::TypedSignal;
+use crate::sys;
 
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // Internal re-exports
@@ -115,7 +116,7 @@ impl<R: IntoDynamicSend> PartialEq for SignalFutureResolver<R> {
 }
 
 impl<R: InParamTuple + IntoDynamicSend> RustCallable for SignalFutureResolver<R> {
-    fn invoke(&mut self, args: &[&Variant]) -> Result<Variant, ()> {
+    fn invoke(&mut self, args: &[&Variant]) -> Variant {
         let waker = {
             let mut data = self.data.lock().unwrap();
             data.state = SignalFutureState::Ready(R::from_variant_array(args).into_dynamic_send());
@@ -128,7 +129,7 @@ impl<R: InParamTuple + IntoDynamicSend> RustCallable for SignalFutureResolver<R>
             waker.wake();
         }
 
-        Ok(Variant::nil())
+        Variant::nil()
     }
 }
 
@@ -197,9 +198,11 @@ pub struct FallibleSignalFuture<R: InParamTuple + IntoDynamicSend> {
 
 impl<R: InParamTuple + IntoDynamicSend> FallibleSignalFuture<R> {
     fn new(signal: Signal) -> Self {
-        debug_assert!(
+        sys::strict_assert!(
             !signal.is_null(),
-            "Failed to create a future for an invalid Signal!\nEither the signal object was already freed or the signal was not registered in the object before using it.",
+            "Failed to create future for invalid signal:\n\
+            Either the signal object was already freed, or it\n\
+            was not registered in the object before being used.",
         );
 
         let data = Arc::new(Mutex::new(SignalFutureData::default()));
@@ -207,9 +210,9 @@ impl<R: InParamTuple + IntoDynamicSend> FallibleSignalFuture<R> {
         // The callable currently requires that the return value is Sync + Send.
         let callable = SignalFutureResolver::new(data.clone());
 
-        signal.connect(
+        signal.connect_flags(
             &Callable::from_custom(callable.clone()),
-            ConnectFlags::ONE_SHOT.ord() as i64,
+            ConnectFlags::ONE_SHOT,
         );
 
         Self {

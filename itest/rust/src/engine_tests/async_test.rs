@@ -7,7 +7,7 @@
 
 use std::ops::Deref;
 
-use godot::builtin::{array, vslice, Array, Callable, Signal, Variant};
+use godot::builtin::{array, vslice, Array, Callable, Signal};
 use godot::classes::{Object, RefCounted};
 use godot::obj::{Base, Gd, NewAlloc, NewGd};
 use godot::prelude::{godot_api, GodotClass};
@@ -132,6 +132,8 @@ fn async_task_signal_future_panic() -> TaskHandle {
 #[cfg(feature = "experimental-threads")]
 #[itest(async)]
 fn signal_future_non_send_arg_panic() -> TaskHandle {
+    use godot::sys;
+
     use crate::framework::ThreadCrosser;
 
     let mut object = RefCounted::new_gd();
@@ -211,7 +213,7 @@ fn resolver_callabable_equality() {
 
     let callable = Callable::from_custom(resolver.clone());
     let cloned_callable = Callable::from_custom(resolver.clone());
-    let unrelated_callable = Callable::from_local_fn("unrelated", |_| Ok(Variant::nil()));
+    let unrelated_callable = Callable::from_fn("unrelated", |_| {});
 
     assert_eq!(callable, cloned_callable);
     assert_ne!(callable, unrelated_callable);

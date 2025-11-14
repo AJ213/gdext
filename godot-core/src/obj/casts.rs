@@ -11,6 +11,7 @@ use std::mem::ManuallyDrop;
 use godot_ffi::GodotNullableFfi;
 
 use crate::obj::{GodotClass, RawGd};
+use crate::sys;
 
 /// Represents a successful low-level cast from `T` to `U`.
 ///
@@ -48,7 +49,7 @@ impl<T: GodotClass, U: GodotClass> CastSuccess<T, U> {
     }
 
     /// Access shared reference to destination, without consuming object.
-    #[cfg(debug_assertions)]
+    #[cfg(safeguards_strict)]
     pub fn as_dest_ref(&self) -> &RawGd<U> {
         self.check_validity();
         &self.dest
@@ -56,6 +57,7 @@ impl<T: GodotClass, U: GodotClass> CastSuccess<T, U> {
 
     /// Access exclusive reference to destination, without consuming object.
     pub fn as_dest_mut(&mut self) -> &mut RawGd<U> {
+        #[cfg(safeguards_strict)]
         self.check_validity();
         &mut self.dest
     }
@@ -65,18 +67,20 @@ impl<T: GodotClass, U: GodotClass> CastSuccess<T, U> {
     /// This trade is needed because the result is a weak pointer (no ref-count increment). By submitting a strong pointer in its place,
     /// we can retain the overall ref-count balance.
     pub fn into_dest(self, traded_source: RawGd<T>) -> RawGd<U> {
-        debug_assert_eq!(
+        sys::strict_assert_eq!(
             traded_source.instance_id_unchecked(),
             self.dest.instance_id_unchecked(),
             "traded_source must point to the same object as the destination"
         );
+        #[cfg(safeguards_strict)]
         self.check_validity();
 
         std::mem::forget(traded_source);
         ManuallyDrop::into_inner(self.dest)
     }
 
+    #[cfg(safeguards_strict)]
     fn check_validity(&self) {
-        debug_assert!(self.dest.is_null() || self.dest.is_instance_valid());
+        assert!(self.dest.is_null() || self.dest.is_instance_valid());
     }
 }

@@ -142,7 +142,13 @@ function findGodot() {
 # builtins like `test`.
 
 function cmd_fmt() {
-    run cargo fmt --all -- --check
+    # Run rustfmt in nightly toolchain if available.
+    if [[ $(rustup toolchain list) =~ nightly ]]; then
+        run cargo +nightly fmt --all -- --check
+    else
+        log -e "${YELLOW}Warning: nightly toolchain not found; stable rustfmt might not pass CI.${END}"
+        run cargo fmt --all -- --check
+    fi
 }
 
 function cmd_clippy() {
@@ -312,18 +318,18 @@ function compute_elapsed() {
 for cmd in "${cmds[@]}"; do
     "cmd_${cmd}" || {
         compute_elapsed
-        log -ne "$RED\n====================="
-        log -ne "\ngdext: checks FAILED."
-        log -ne "\n=====================\n$END"
+        log -ne "$RED\n=========================="
+        log -ne "\ngodot-rust: checks FAILED."
+        log -ne "\n==========================\n$END"
         log -ne "\nTotal duration: $elapsed.\n"
         exit 1
     }
 done
 
 compute_elapsed
-log -ne "$CYAN\n========================="
-log -ne "\ngdext: checks SUCCESSFUL."
-log -ne "\n=========================\n$END"
+log -ne "$CYAN\n=============================="
+log -ne "\ngodot-rust: checks SUCCESSFUL."
+log -ne "\n==============================\n$END"
 log -ne "\nTotal duration: $elapsed.\n"
 
 # If invoked with sh instead of bash, pressing Up arrow after executing `sh check.sh` may cause a `[A` to appear.

@@ -10,9 +10,130 @@ Cutting-edge API docs of the `master` branch are available [here](https://godot-
 
 ## Quick navigation
 
+- [v0.4.0](#v040), [v0.4.1](#v041), [v0.4.2](#v042)
 - [v0.3.0](#v030), [v0.3.1](#v031), [v0.3.2](#v032), [v0.3.3](#v033), [v0.3.4](#v034), [v0.3.5](#v035)
 - [v0.2.0](#v020), [v0.2.1](#v021), [v0.2.2](#v022), [v0.2.3](#v023), [v0.2.4](#v024)
 - [v0.1.1](#v011), [v0.1.2](#v012), [v0.1.3](#v013)
+
+
+## [v0.4.2](https://docs.rs/godot/0.4.2)
+
+_26 October 2025_
+
+### 🌻 Features
+
+- Simple API to fetch autoloads ([#1381](https://github.com/godot-rust/gdext/pull/1381))
+- Experimental support for required parameters/returns in Godot APIs ([#1383](https://github.com/godot-rust/gdext/pull/1383))
+
+### 🧹 Quality of life
+
+- `ExtensionLibrary::on_main_loop_*`: merge into new `on_stage_init/deinit` API ([#1380](https://github.com/godot-rust/gdext/pull/1380))
+- Rename builtin `hash()` -> `hash_u32()`; add tests ([#1366](https://github.com/godot-rust/gdext/pull/1366))
+
+### 🛠️ Bugfixes
+
+- Backport Godot fix for incorrect `Glyph` native-struct ([#1369](https://github.com/godot-rust/gdext/pull/1369))
+- Validate call params for `gd_self` virtual methods ([#1382](https://github.com/godot-rust/gdext/pull/1382))
+- Fix codegen regression: `Array<Option<Gd>>` -> `Array<Gd>` ([#1385](https://github.com/godot-rust/gdext/pull/1385))
+
+
+## [v0.4.1](https://docs.rs/godot/0.4.1)
+
+_23 October 2025_
+
+### 🌻 Features
+
+- Add main loop callbacks to `ExtensionLibrary` ([#1313](https://github.com/godot-rust/gdext/pull/1313), [#1380](https://github.com/godot-rust/gdext/pull/1380))
+- Class Docs – register docs in `#[godot_api(secondary)]`, simplify docs registration logic ([#1355](https://github.com/godot-rust/gdext/pull/1355))
+- Codegen: support sys types in engine APIs ([#1363](https://github.com/godot-rust/gdext/pull/1363), [#1365](https://github.com/godot-rust/gdext/pull/1365))
+
+### 📈 Performance
+
+- Use Rust `str` instead of `CStr` in `ClassIdSource` ([#1334](https://github.com/godot-rust/gdext/pull/1334))
+
+### 🧹 Quality of life
+
+- Preserve doc comments for signal ([#1353](https://github.com/godot-rust/gdext/pull/1353))
+- Provide error context for typed array clone check ([#1348](https://github.com/godot-rust/gdext/pull/1348))
+- Improve spans; use tuple type for virtual signatures ([#1370](https://github.com/godot-rust/gdext/pull/1370))
+- Preserve span of arguments for better compile errors ([#1373](https://github.com/godot-rust/gdext/pull/1373))
+- Update to litrs 1.0 ([#1377](https://github.com/godot-rust/gdext/pull/1377))
+- Allow opening itests in editor ([#1379](https://github.com/godot-rust/gdext/pull/1379))
+
+### 🛠️ Bugfixes
+
+- Ease `AsArg<Option<Gd<T>>>` bounds to make it usable with signals ([#1371](https://github.com/godot-rust/gdext/pull/1371))
+- Handle panic in OnReady `auto_init` ([#1351](https://github.com/godot-rust/gdext/pull/1351))
+- Update `GFile::read_as_gstring_entire()` after Godot removes `skip_cr` parameter ([#1349](https://github.com/godot-rust/gdext/pull/1349))
+- Fix `Callable::from_sync_fn` doc example using deprecated `Result<T>` return ([#1347](https://github.com/godot-rust/gdext/pull/1347))
+- Deprecate `#[class(no_init)]` for editor plugins ([#1378](https://github.com/godot-rust/gdext/pull/1378))
+- Initialize and cache proper return value for generic, typed array ([#1357](https://github.com/godot-rust/gdext/pull/1357))
+- Fix hot-reload crashes on macOS when the `.gdextension` file changes ([#1367](https://github.com/godot-rust/gdext/pull/1367))
+
+
+## [v0.4.0](https://docs.rs/godot/0.4.0)
+
+_29 September 2025_
+
+### 🌻 Features
+
+- Godot 4.5 API level ([#1339](https://github.com/godot-rust/gdext/pull/1339))
+- Allow to use `#[func(gd_self)]` with Interface methods ([#1282](https://github.com/godot-rust/gdext/pull/1282))
+- Generic `PackedArray<T>` ([#1291](https://github.com/godot-rust/gdext/pull/1291))
+- 🌊 Numeric `#[export]` limits and type checks ([#1320](https://github.com/godot-rust/gdext/pull/1320))
+- 🌊 Argument passing: new `ToGodot::Pass` is either `ByValue`/`ByRef` ([#1285](https://github.com/godot-rust/gdext/pull/1285))
+- 🌊 More type-safe engine APIs (mostly int -> enum) ([#1315](https://github.com/godot-rust/gdext/pull/1315))
+- Emit `POSTINITIALIZE` notification after `init()` ([#1211](https://github.com/godot-rust/gdext/pull/1211))
+- Add `TypedSignal::to_untyped()` ([#1288](https://github.com/godot-rust/gdext/pull/1288))
+- Add `Dictionary::get_or_insert()` ([#1295](https://github.com/godot-rust/gdext/pull/1295))
+- Add `ElementType`; expose it in arrays and dictionaries ([#1304](https://github.com/godot-rust/gdext/pull/1304))
+- Migrate inherent `singleton()` fn to new `Singleton` trait ([#1325](https://github.com/godot-rust/gdext/pull/1325))
+
+### 📈 Performance
+
+- `base()` + `base_mut()` no longer clone `Gd` pointer ([#1302](https://github.com/godot-rust/gdext/pull/1302))
+- Restore `ToGodot` pass-by-ref for objects ([#1310](https://github.com/godot-rust/gdext/pull/1310))
+- Remove static lifetime in `StringName::from(&CStr)` ([#1307](https://github.com/godot-rust/gdext/pull/1307))
+- `AsArg` for objects now consistently passes by reference ([#1314](https://github.com/godot-rust/gdext/pull/1314))
+- 🌊 Argument passing: new `ToGodot::Pass` is either `ByValue`/`ByRef` ([#1285](https://github.com/godot-rust/gdext/pull/1285))
+- 🌊 Remove by-value `From` conversions between strings ([#1286](https://github.com/godot-rust/gdext/pull/1286))
+
+### 🧹 Quality of life
+
+- 🌊 Remove support for Godot 4.1 ([#1292](https://github.com/godot-rust/gdext/pull/1292))
+- `MultiplayerApi`: getters now use `&self` receiver rather than `&mut self` ([#1274](https://github.com/godot-rust/gdext/pull/1274))
+- `ClassName` construction from dynamic values ([#1298](https://github.com/godot-rust/gdext/pull/1298))
+- Implement Send and Sync for PhantomVar ([#1305](https://github.com/godot-rust/gdext/pull/1305))
+- Add `ClassCodegenLevel::Core` ([#1289](https://github.com/godot-rust/gdext/pull/1289))
+- 🌊 Merge `AsObjectArg<T>` into `AsArg<Gd<T>>` ([#1308](https://github.com/godot-rust/gdext/pull/1308))
+- 🌊 Add `SignedRange` for negative indices in range ops ([#1300](https://github.com/godot-rust/gdext/pull/1300))
+- 🌊 Require that classes starting with "Editor" be marked internal ([#1272](https://github.com/godot-rust/gdext/pull/1272))
+- Address `clippy::nursery` lint errors in macros ([#1317](https://github.com/godot-rust/gdext/pull/1317))
+- FFI: make `AsArg` internals safer to use ([#1321](https://github.com/godot-rust/gdext/pull/1321))
+- `AsArg` now supports `Option<DynGd>` ([#1323](https://github.com/godot-rust/gdext/pull/1323))
+- Rename `ClassName` -> `ClassId` ([#1322](https://github.com/godot-rust/gdext/pull/1322))
+- 🌊 Split `apply_deferred()` -> `run_deferred()` + `run_deferred_gd()` ([#1327](https://github.com/godot-rust/gdext/pull/1327))
+- 🌊 `StringName`: remove `From` impl for `&'static CStr` ([#1316](https://github.com/godot-rust/gdext/pull/1316))
+- 🌊 `Callable::from_local_fn()` now returns `R: ToGodot` ([#1332](https://github.com/godot-rust/gdext/pull/1332))
+- 🌊 Add higher-level `CallErrorType` for script instance APIs ([#1333](https://github.com/godot-rust/gdext/pull/1333))
+- 🌊 Remove deprecated symbols, other small cleanups ([#1340](https://github.com/godot-rust/gdext/pull/1340))
+- 🌊 `Callable::from_linked_fn` now returns `R: ToGodot` instead of Variant ([#1344](https://github.com/godot-rust/gdext/pull/1344))
+- `Callable`: rename `from_local_fn` -> `from_fn`, keep deprecated `from_local_fn` with old signature ([#1346](https://github.com/godot-rust/gdext/pull/1346))
+
+### 🛠️ Bugfixes
+
+- Fix `ThreadConfined<T>` using thread-unsafe `Drop` ([#1283](https://github.com/godot-rust/gdext/pull/1283))
+- Emit proper compile error when `#[rpc]` attribute is used in `#[godot_api(secondary)]` block ([#1294](https://github.com/godot-rust/gdext/pull/1294))
+- Drop_strong_ref – make sure that given instance haven't been freed before dropping stored StrongRef ([#1301](https://github.com/godot-rust/gdext/pull/1301))
+- Improve init-level tests; fix `RenderingServer` singleton error ([#1309](https://github.com/godot-rust/gdext/pull/1309))
+- Remove lifetime from `PassiveGd` ([#1312](https://github.com/godot-rust/gdext/pull/1312))
+- Codegen excludes classes only on certain targets ([#1338](https://github.com/godot-rust/gdext/pull/1338))
+- Fix typo in `std::mem::transmute` causing UB while using `AsArg<DynGd<Base, D>>` ([#1345](https://github.com/godot-rust/gdext/pull/1345))
+- Itest: work around clippy errors when `quote!` generates one big line ([#1336](https://github.com/godot-rust/gdext/pull/1336))
+
+### 📚 Documentation
+
+- ReadMe: update + code example ([#1342](https://github.com/godot-rust/gdext/pull/1342))
 
 
 ## [v0.3.5](https://docs.rs/godot/0.3.5)

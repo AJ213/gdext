@@ -4,13 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-
-mod markdown_converter;
-
 use proc_macro2::{Ident, TokenStream};
 use quote::{quote, ToTokens};
 
 use crate::class::{ConstDefinition, Field, FuncDefinition, SignalDefinition};
+use crate::docs::markdown_converter;
 
 #[derive(Default)]
 struct XmlParagraphs {
@@ -24,33 +22,40 @@ struct XmlParagraphs {
     deprecated_attr: String,
 }
 
+pub struct InherentImplXmlDocs {
+    pub method_xml_elems: String,
+    pub constant_xml_elems: String,
+    pub signal_xml_elems: String,
+}
+
 /// Returns code containing the doc information of a `#[derive(GodotClass)] struct MyClass` declaration iff class or any of its members is documented.
 pub fn document_struct(
     base: String,
     description: &[venial::Attribute],
     fields: &[Field],
 ) -> TokenStream {
-    let base_escaped = xml_escape(base);
     let XmlParagraphs {
         description_content,
         deprecated_attr,
         experimental_attr,
     } = attribute_docs_to_xml_paragraphs(description).unwrap_or_default();
 
-    let members = fields
+    let properties = fields
         .iter()
         .filter(|field| field.var.is_some() || field.export.is_some())
         .filter_map(format_member_xml)
         .collect::<String>();
 
+    let base_escaped = xml_escape(base);
+
     quote! {
-            ::godot::docs::StructDocs {
-                base: #base_escaped,
-                description: #description_content,
-                experimental: #experimental_attr,
-                deprecated: #deprecated_attr,
-                members: #members,
-            }
+        ::godot::docs::StructDocs {
+            base: #base_escaped,
+            description: #description_content,
+            experimental: #experimental_attr,
+            deprecated: #deprecated_attr,
+            properties: #properties,
+        }
     }
 }
 
@@ -59,39 +64,27 @@ pub fn document_inherent_impl(
     functions: &[FuncDefinition],
     constants: &[ConstDefinition],
     signals: &[SignalDefinition],
-) -> TokenStream {
-    let group_xml_block = |s: String, tag: &str| -> String {
-        if s.is_empty() {
-            s
-        } else {
-            format!("<{tag}>{s}</{tag}>")
-        }
-    };
-
+) -> InherentImplXmlDocs {
     let signal_xml_elems = signals
         .iter()
         .filter_map(format_signal_xml)
         .collect::<String>();
-    let signals_block = group_xml_block(signal_xml_elems, "signals");
 
     let constant_xml_elems = constants
         .iter()
         .map(|ConstDefinition { raw_constant }| raw_constant)
         .filter_map(format_constant_xml)
         .collect::<String>();
-    let constants_block = group_xml_block(constant_xml_elems, "constants");
 
     let method_xml_elems = functions
         .iter()
         .filter_map(format_method_xml)
         .collect::<String>();
 
-    quote! {
-        ::godot::docs::InherentImplDocs {
-            methods: #method_xml_elems,
-            signals_block: #signals_block,
-            constants_block: #constants_block,
-        }
+    InherentImplXmlDocs {
+        method_xml_elems,
+        constant_xml_elems,
+        signal_xml_elems,
     }
 }
 
@@ -123,9 +116,8 @@ fn extract_docs_from_attributes(doc: &[venial::Attribute]) -> impl Iterator<Item
         })
         .flat_map(|doc| {
             doc.iter().map(|token_tree| {
-                let str = token_tree.to_string();
-                litrs::StringLit::parse(str.clone())
-                    .map_or(str, |parsed| parsed.value().to_string())
+                litrs::StringLit::try_from(token_tree)
+                    .map_or_else(|_| token_tree.to_string(), |parsed| parsed.into_value())
             })
         })
 }

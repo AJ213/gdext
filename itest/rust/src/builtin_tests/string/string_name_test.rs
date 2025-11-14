@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use godot::builtin::{Encoding, GString, NodePath, StringName};
+use godot::builtin::{static_sname, Encoding, GString, NodePath, StringName};
 
 use crate::framework::{assert_eq_self, itest};
 
@@ -28,11 +28,6 @@ fn string_name_conversion() {
     let back = GString::from(&name);
 
     assert_eq!(string, back);
-
-    let second = StringName::from(string.clone());
-    let back = GString::from(second);
-
-    assert_eq!(string, back);
 }
 
 #[itest]
@@ -40,11 +35,6 @@ fn string_name_node_path_conversion() {
     let string = StringName::from("some string");
     let name = NodePath::from(&string);
     let back = StringName::from(&name);
-
-    assert_eq!(string, back);
-
-    let second = NodePath::from(string.clone());
-    let back = StringName::from(second);
 
     assert_eq!(string, back);
 }
@@ -137,11 +127,35 @@ fn string_name_from_cstr() {
     ];
 
     for (bytes, string) in cases.into_iter() {
-        let a = StringName::from(bytes);
+        let a = StringName::__cstr(bytes);
         let b = StringName::from(string);
 
         assert_eq!(a, b);
     }
+}
+
+#[itest]
+fn string_name_static_sname() {
+    let a = static_sname!(c"pure ASCII\t[~]").clone();
+    let b = StringName::from("pure ASCII\t[~]");
+
+    assert_eq!(a, b);
+
+    let a1 = a.clone();
+    let a2 = static_sname!(c"pure ASCII\t[~]").clone();
+
+    assert_eq!(a, a1);
+    assert_eq!(a1, a2);
+
+    let a = static_sname!(c"\xB1").clone();
+    let b = StringName::from("±");
+
+    assert_eq!(a, b);
+
+    let a = static_sname!(c"Latin-1 \xA3 \xB1 text \xBE").clone();
+    let b = StringName::from("Latin-1 £ ± text ¾");
+
+    assert_eq!(a, b);
 }
 
 #[itest]

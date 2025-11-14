@@ -17,6 +17,7 @@ use godot::classes::{
     IEditorPlugin, INode, INode2D, IPrimitiveMesh, IRefCounted, InputEvent, InputEventAction, Node,
     Node2D, Object, PrimitiveMesh, RefCounted, Window,
 };
+use godot::global::godot_str;
 use godot::meta::ToGodot;
 use godot::obj::{Base, Gd, NewAlloc, NewGd};
 use godot::private::class_macros::assert_eq_approx;
@@ -44,7 +45,7 @@ struct VirtualMethodTest {
 #[godot_api]
 impl IRefCounted for VirtualMethodTest {
     fn to_string(&self) -> GString {
-        format!("VirtualMethodTest[integer={}]", self.integer).into()
+        godot_str!("VirtualMethodTest[integer={}]", self.integer)
     }
 }
 
@@ -737,7 +738,7 @@ impl GetSetTest {
 // There isn't a good way to test editor plugins, but we can at least declare one to ensure that the macro
 // compiles.
 #[derive(GodotClass)]
-#[class(no_init, base = EditorPlugin, tool)]
+#[class(init, base = EditorPlugin, tool)]
 struct CustomEditorPlugin;
 
 // Just override EditorPlugin::edit() to verify method is declared with Option<T>.

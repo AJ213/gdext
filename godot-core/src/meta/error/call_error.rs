@@ -16,6 +16,9 @@ use crate::meta::{CallContext, ToGodot};
 use crate::private::PanicPayload;
 use crate::sys;
 
+/// Result type for function calls that can fail.
+pub(crate) type CallResult<R> = Result<R, CallError>;
+
 /// Error capable of representing failed function calls.
 ///
 /// This type is returned from _varcall_ functions in the Godot API that begin with `try_` prefixes,
@@ -23,7 +26,7 @@ use crate::sys;
 /// _Varcall_ refers to the "variant call" calling convention, meaning that arguments and return values are passed as `Variant` (as opposed
 /// to _ptrcall_, which passes direct pointers to Rust objects).
 ///
-/// Allows to inspect the involved class and method via `class_name()` and `method_name()`. Implements the `std::error::Error` trait, so
+/// Allows to inspect the involved class and method via `class_id()` and `method_name()`. Implements the `std::error::Error` trait, so
 /// it comes with `Display` and `Error::source()` APIs.
 ///
 /// # Possible error causes
@@ -118,16 +121,18 @@ impl CallError {
     /// Checks whether number of arguments matches the number of parameters.
     pub(crate) fn check_arg_count(
         call_ctx: &CallContext,
-        arg_count: usize,
-        param_count: usize,
+        arg_count: usize,           // Arguments passed by the caller.
+        default_value_count: usize, // Fallback/default values, *not* arguments.
+        param_count: usize,         // Parameters declared by the function.
     ) -> Result<(), Self> {
-        // This will need to be adjusted once optional parameters are supported in #[func].
-        if arg_count == param_count {
+        // Valid if both:
+        // - Provided args + available defaults (fallbacks) are enough to fill all parameters.
+        // - Provided args don't exceed parameter count.
+        if arg_count + default_value_count >= param_count && arg_count <= param_count {
             return Ok(());
         }
 
         let call_error = Self::failed_param_count(call_ctx, arg_count, param_count);
-
         Err(call_error)
     }
 
@@ -177,7 +182,7 @@ impl CallError {
     /// Returns an error for a failed parameter conversion.
     pub(crate) fn failed_param_conversion<P>(
         call_ctx: &CallContext,
-        param_index: isize,
+        param_index: usize,
         convert_error: ConvertError,
     ) -> Self {
         let param_ty = std::any::type_name::<P>();
@@ -251,7 +256,7 @@ impl CallError {
         // This specializes on reflection-style calls, e.g. call(), rpc() etc.
         // In these cases, varargs are the _actual_ arguments, with required args being metadata such as method name.
 
-        debug_assert_ne!(err.error, sys::GDEXTENSION_CALL_OK); // already checked outside
+        sys::strict_assert_ne!(err.error, sys::GDEXTENSION_CALL_OK); // already checked outside
 
         let sys::GDExtensionCallError {
             error,

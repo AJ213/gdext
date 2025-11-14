@@ -9,7 +9,7 @@ use godot_ffi::conv::u32_to_usize;
 
 use crate::builtin::{StringName, Variant};
 use crate::global::MethodFlags;
-use crate::meta::{ClassName, PropertyInfo};
+use crate::meta::{ClassId, PropertyInfo};
 use crate::sys;
 
 /// Describes a method in Godot.
@@ -21,9 +21,11 @@ use crate::sys;
 pub struct MethodInfo {
     pub id: i32,
     pub method_name: StringName,
-    pub class_name: ClassName,
+    pub class_name: ClassId,
     pub return_type: PropertyInfo,
     pub arguments: Vec<PropertyInfo>,
+    /// Whether default arguments are real "arguments" is controversial. From the function PoV they are, but for the caller,
+    /// they are just pre-set values to fill in for missing arguments.
     pub default_arguments: Vec<Variant>,
     pub flags: MethodFlags,
 }

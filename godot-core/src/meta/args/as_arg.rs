@@ -5,13 +5,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use std::ffi::CStr;
-
 use crate::builtin::{GString, NodePath, StringName, Variant};
 use crate::meta::sealed::Sealed;
 use crate::meta::traits::{GodotFfiVariant, GodotNullableFfi};
-use crate::meta::{CowArg, GodotType, ObjectArg, ToGodot};
-use crate::obj::{bounds, Bounds, DynGd, Gd, GodotClass, Inherits};
+use crate::meta::{CowArg, FfiArg, GodotType, ObjectArg, ToGodot};
+use crate::obj::{DynGd, Gd, GodotClass, Inherits};
 
 /// Implicit conversions for arguments passed to Godot APIs.
 ///
@@ -91,18 +89,30 @@ where
     // ergonomics out weigh the runtime cost. Using the CowArg allows us to create a blanket implementation of the trait for all types that
     // implement ToGodot.
     #[doc(hidden)]
-    fn into_arg<'r>(self) -> CowArg<'r, T>
+    fn into_arg<'arg>(self) -> CowArg<'arg, T>
     where
-        Self: 'r;
+        Self: 'arg;
+
+    /// FFI-optimized argument conversion that may use `FfiObject` when beneficial.
+    ///
+    /// Defaults to calling `into_arg()` and wrapping in `FfiArg::Cow()`, which always works, but might be an `Owned` for a conservative
+    /// approach (e.g. object upcast).
+    #[doc(hidden)]
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, T>
+    where
+        Self: 'arg,
+    {
+        FfiArg::Cow(self.into_arg())
+    }
 }
 
 impl<T> AsArg<T> for &T
 where
     T: ToGodot<Pass = ByRef>,
 {
-    fn into_arg<'r>(self) -> CowArg<'r, T>
+    fn into_arg<'arg>(self) -> CowArg<'arg, T>
     where
-        Self: 'r,
+        Self: 'arg,
     {
         CowArg::Borrowed(self)
     }
@@ -112,9 +122,9 @@ impl<T> AsArg<T> for T
 where
     T: ToGodot<Pass = ByValue>,
 {
-    fn into_arg<'r>(self) -> CowArg<'r, T>
+    fn into_arg<'arg>(self) -> CowArg<'arg, T>
     where
-        Self: 'r,
+        Self: 'arg,
     {
         CowArg::Owned(self)
     }
@@ -123,100 +133,254 @@ where
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // Object (Gd + DynGd) impls
 
-// TODO(v0.4): all objects + optional objects should be pass-by-ref.
-
+// Convert `Gd` -> `Gd` (with upcast).
 impl<T, Base> AsArg<Gd<Base>> for &Gd<T>
 where
     T: Inherits<Base>,
     Base: GodotClass,
 {
-    fn into_arg<'r>(self) -> CowArg<'r, Gd<Base>>
+    //noinspection RsConstantConditionIf - false positive in IDE for `T::IS_SAME_CLASS`.
+    fn into_arg<'arg>(self) -> CowArg<'arg, Gd<Base>>
     where
-        Self: 'r,
+        Self: 'arg,
     {
-        CowArg::Owned(self.clone().upcast::<Base>())
+        if T::IS_SAME_CLASS {
+            // SAFETY: T == Base, so &Gd<T> can be treated as &Gd<Base>.
+            let gd_ref = unsafe { std::mem::transmute::<&Gd<T>, &Gd<Base>>(self) };
+            CowArg::Borrowed(gd_ref)
+        } else {
+            // Different types: clone and upcast. May incur ref-count increment for RefCounted objects, but the common path
+            // of FFI passing is already optimized.
+            CowArg::Owned(self.clone().upcast())
+        }
+    }
+
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, Gd<Base>>
+    where
+        Self: 'arg,
+    {
+        let arg = ObjectArg::from_gd(self);
+        FfiArg::FfiObject(arg)
     }
 }
 
-impl<T, U, D> AsArg<DynGd<T, D>> for &DynGd<U, D>
+/// Convert `DynGd` -> `DynGd` (with upcast).
+impl<T, D, Base> AsArg<DynGd<Base, D>> for &DynGd<T, D>
 where
-    T: GodotClass,
-    U: Inherits<T>,
+    T: Inherits<Base>,
     D: ?Sized,
+    Base: GodotClass,
 {
-    fn into_arg<'r>(self) -> CowArg<'r, DynGd<T, D>>
+    //noinspection RsConstantConditionIf - false positive in IDE for `T::IS_SAME_CLASS`.
+    fn into_arg<'arg>(self) -> CowArg<'arg, DynGd<Base, D>>
     where
-        Self: 'r,
+        Self: 'arg,
     {
-        CowArg::Owned(self.clone().upcast::<T>())
+        if T::IS_SAME_CLASS {
+            // SAFETY: T == Base, so &DynGd<T, D> can be treated as &DynGd<Base, D>.
+            let gd_ref = unsafe { std::mem::transmute::<&DynGd<T, D>, &DynGd<Base, D>>(self) };
+            CowArg::Borrowed(gd_ref)
+        } else {
+            // Different types: clone and upcast. May incur ref-count increment for RefCounted objects, but the common path
+            // of FFI passing is already optimized.
+            CowArg::Owned(self.clone().upcast())
+        }
+    }
+
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, DynGd<Base, D>>
+    where
+        Self: 'arg,
+    {
+        let arg = ObjectArg::from_gd(self);
+        FfiArg::FfiObject(arg)
     }
 }
 
-// Convert DynGd -> Gd (with upcast).
-impl<'r, T, U, D> AsArg<Gd<T>> for &'r DynGd<U, D>
+/// Convert `DynGd` -> `Gd` (with upcast).
+impl<T, D, Base> AsArg<Gd<Base>> for &DynGd<T, D>
+where
+    T: Inherits<Base>,
+    D: ?Sized,
+    Base: GodotClass,
+{
+    fn into_arg<'arg>(self) -> CowArg<'arg, Gd<Base>>
+    where
+        Self: 'arg,
+    {
+        let gd_ref: &Gd<T> = self; // DynGd -> Gd deref.
+        AsArg::into_arg(gd_ref)
+    }
+
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, Gd<Base>>
+    where
+        Self: 'arg,
+    {
+        let gd_ref: &Gd<T> = self; // DynGd -> Gd deref.
+        AsArg::into_ffi_arg(gd_ref)
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+// Null arguments
+
+/// Private struct for passing null arguments to optional object parameters.
+///
+/// This struct implements `AsArg` for both `Option<Gd<T>>` and `Option<DynGd<T, D>>`, allowing [`Gd::null_arg()`] and [`DynGd::null_arg()`]
+/// to share implementation.
+///
+/// Not public, as `impl AsArg<...>` is used by `null_arg()` methods.
+pub(crate) struct NullArg<T>(pub std::marker::PhantomData<*mut T>);
+
+impl<T> AsArg<Option<Gd<T>>> for NullArg<T>
 where
     T: GodotClass,
-    U: Inherits<T>,
-    D: ?Sized,
 {
-    fn into_arg<'cow>(self) -> CowArg<'cow, Gd<T>>
+    fn into_arg<'arg>(self) -> CowArg<'arg, Option<Gd<T>>>
     where
-        'r: 'cow,
+        Self: 'arg,
     {
-        CowArg::Owned(self.clone().upcast::<T>().into_gd())
+        CowArg::Owned(None)
+    }
+}
+
+impl<T, D> AsArg<Option<DynGd<T, D>>> for NullArg<T>
+where
+    T: GodotClass,
+    D: ?Sized + 'static,
+{
+    fn into_arg<'arg>(self) -> CowArg<'arg, Option<DynGd<T, D>>>
+    where
+        Self: 'arg,
+    {
+        CowArg::Owned(None)
     }
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // Optional object (Gd + DynGd) impls
 
-impl<T, U> AsArg<Option<Gd<T>>> for &Option<Gd<U>>
+/// Convert `&Gd` -> `Option<Gd>` (with upcast).
+impl<T, Base> AsArg<Option<Gd<Base>>> for &Gd<T>
 where
-    T: GodotClass + Bounds<Declarer = bounds::DeclEngine>,
-    U: Inherits<T>,
+    T: Inherits<Base>,
+    Base: GodotClass,
 {
-    fn into_arg<'r>(self) -> CowArg<'r, Option<Gd<T>>> {
+    fn into_arg<'arg>(self) -> CowArg<'arg, Option<Gd<Base>>>
+    where
+        Self: 'arg,
+    {
+        // Upcasting to an owned value Gd<Base> requires cloning. Optimized path in into_ffi_arg().
+        CowArg::Owned(Some(self.clone().upcast::<Base>()))
+    }
+
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, Option<Gd<Base>>>
+    where
+        Self: 'arg,
+    {
+        let arg = ObjectArg::from_gd(self);
+        FfiArg::FfiObject(arg)
+    }
+}
+
+/// Convert `Option<&Gd>` -> `Option<Gd>` (with upcast).
+impl<T, Base> AsArg<Option<Gd<Base>>> for Option<&Gd<T>>
+where
+    T: Inherits<Base>,
+    Base: GodotClass,
+{
+    fn into_arg<'arg>(self) -> CowArg<'arg, Option<Gd<Base>>>
+    where
+        Self: 'arg,
+    {
+        // Upcasting to an owned value Gd<Base> requires cloning. Optimized path in into_ffi_arg().
         match self {
-            Some(gd) => CowArg::Owned(Some(gd.clone().upcast::<T>())),
+            Some(gd_ref) => AsArg::into_arg(gd_ref),
             None => CowArg::Owned(None),
         }
     }
-}
 
-impl<T, U> AsArg<Option<Gd<T>>> for Option<&Gd<U>>
-where
-    T: GodotClass + Bounds<Declarer = bounds::DeclEngine>,
-    U: Inherits<T>,
-{
-    fn into_arg<'cow>(self) -> CowArg<'cow, Option<Gd<T>>> {
-        // This needs to construct a new Option<Gd<T>>, so cloning is unavoidable
-        // since we go from Option<&Gd<U>> to Option<Gd<T>>
-        match self {
-            Some(gd) => CowArg::Owned(Some(gd.clone().upcast::<T>())),
-            None => CowArg::Owned(None),
-        }
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, Option<Gd<Base>>>
+    where
+        Self: 'arg,
+    {
+        let arg = ObjectArg::from_option_gd(self);
+        FfiArg::FfiObject(arg)
     }
 }
 
-impl<T, U> AsArg<Option<Gd<T>>> for &Gd<U>
+/// Convert `&DynGd` -> `Option<DynGd>` (with upcast).
+impl<T, D, Base> AsArg<Option<DynGd<Base, D>>> for &DynGd<T, D>
 where
-    T: GodotClass + Bounds<Declarer = bounds::DeclEngine>,
-    U: Inherits<T>,
-{
-    fn into_arg<'cow>(self) -> CowArg<'cow, Option<Gd<T>>> {
-        CowArg::Owned(Some(self.clone().upcast::<T>()))
-    }
-}
-
-impl<T, U, D> AsArg<Option<Gd<T>>> for &DynGd<U, D>
-where
-    T: GodotClass + Bounds<Declarer = bounds::DeclEngine>,
-    U: Inherits<T>,
+    T: Inherits<Base>,
     D: ?Sized,
+    Base: GodotClass,
 {
-    fn into_arg<'cow>(self) -> CowArg<'cow, Option<Gd<T>>> {
-        let gd: &Gd<U> = self; // Deref
-        CowArg::Owned(Some(gd.clone().upcast::<T>()))
+    fn into_arg<'arg>(self) -> CowArg<'arg, Option<DynGd<Base, D>>>
+    where
+        Self: 'arg,
+    {
+        // Upcasting to an owned value DynGd<Base, D> requires cloning. Optimized path in into_ffi_arg().
+        CowArg::Owned(Some(self.clone().upcast()))
+    }
+
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, Option<DynGd<Base, D>>>
+    where
+        Self: 'arg,
+    {
+        let arg = ObjectArg::from_gd(self);
+        FfiArg::FfiObject(arg)
+    }
+}
+
+/// Convert `&DynGd` -> `Option<Gd>` (with upcast).
+impl<T, D, Base> AsArg<Option<Gd<Base>>> for &DynGd<T, D>
+where
+    T: Inherits<Base>,
+    D: ?Sized,
+    Base: GodotClass,
+{
+    fn into_arg<'arg>(self) -> CowArg<'arg, Option<Gd<Base>>>
+    where
+        Self: 'arg,
+    {
+        let gd_ref: &Gd<T> = self; // DynGd -> Gd deref.
+        AsArg::into_arg(gd_ref)
+    }
+
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, Option<Gd<Base>>>
+    where
+        Self: 'arg,
+    {
+        let gd_ref: &Gd<T> = self; // DynGd -> Gd deref.
+        AsArg::into_ffi_arg(gd_ref)
+    }
+}
+
+/// Convert `Option<&DynGd>` -> `Option<DynGd>` (with upcast).
+impl<T, D, Base> AsArg<Option<DynGd<Base, D>>> for Option<&DynGd<T, D>>
+where
+    T: Inherits<Base>,
+    D: ?Sized,
+    Base: GodotClass,
+{
+    fn into_arg<'arg>(self) -> CowArg<'arg, Option<DynGd<Base, D>>>
+    where
+        Self: 'arg,
+    {
+        // Upcasting to an owned value Gd<Base> requires cloning. Optimized path in into_ffi_arg().
+        match self {
+            Some(gd_ref) => AsArg::into_arg(gd_ref),
+            None => CowArg::Owned(None),
+        }
+    }
+
+    fn into_ffi_arg<'arg>(self) -> FfiArg<'arg, Option<DynGd<Base, D>>>
+    where
+        Self: 'arg,
+    {
+        let option_gd: Option<&Gd<T>> = self.map(|v| &**v); // as_deref() not working.
+        let arg = ObjectArg::from_option_gd(option_gd);
+        FfiArg::FfiObject(arg)
     }
 }
 
@@ -251,9 +415,9 @@ where
 ///     }
 /// }
 /// ```
-pub fn owned_into_arg<'r, T>(owned_val: T) -> impl AsArg<T> + 'r
+pub fn owned_into_arg<'arg, T>(owned_val: T) -> impl AsArg<T> + 'arg
 where
-    T: ToGodot + 'r,
+    T: ToGodot + 'arg,
 {
     CowArg::Owned(owned_val)
 }
@@ -354,9 +518,9 @@ impl<T> AsArg<T> for CowArg<'_, T>
 where
     for<'r> T: ToGodot,
 {
-    fn into_arg<'r>(self) -> CowArg<'r, T>
+    fn into_arg<'arg>(self) -> CowArg<'arg, T>
     where
-        Self: 'r,
+        Self: 'arg,
     {
         self
     }
@@ -368,13 +532,13 @@ where
 // Note: for all string types S, `impl AsArg<S> for &mut String` is not yet provided, but we can add them if needed.
 
 impl AsArg<GString> for &str {
-    fn into_arg<'r>(self) -> CowArg<'r, GString> {
+    fn into_arg<'arg>(self) -> CowArg<'arg, GString> {
         CowArg::Owned(GString::from(self))
     }
 }
 
 impl AsArg<GString> for &String {
-    fn into_arg<'r>(self) -> CowArg<'r, GString> {
+    fn into_arg<'arg>(self) -> CowArg<'arg, GString> {
         CowArg::Owned(GString::from(self))
     }
 }
@@ -383,19 +547,13 @@ impl AsArg<GString> for &String {
 // StringName
 
 impl AsArg<StringName> for &str {
-    fn into_arg<'r>(self) -> CowArg<'r, StringName> {
+    fn into_arg<'arg>(self) -> CowArg<'arg, StringName> {
         CowArg::Owned(StringName::from(self))
     }
 }
 
 impl AsArg<StringName> for &String {
-    fn into_arg<'r>(self) -> CowArg<'r, StringName> {
-        CowArg::Owned(StringName::from(self))
-    }
-}
-
-impl AsArg<StringName> for &'static CStr {
-    fn into_arg<'r>(self) -> CowArg<'r, StringName> {
+    fn into_arg<'arg>(self) -> CowArg<'arg, StringName> {
         CowArg::Owned(StringName::from(self))
     }
 }
@@ -404,13 +562,13 @@ impl AsArg<StringName> for &'static CStr {
 // NodePath
 
 impl AsArg<NodePath> for &str {
-    fn into_arg<'r>(self) -> CowArg<'r, NodePath> {
+    fn into_arg<'arg>(self) -> CowArg<'arg, NodePath> {
         CowArg::Owned(NodePath::from(self))
     }
 }
 
 impl AsArg<NodePath> for &String {
-    fn into_arg<'r>(self) -> CowArg<'r, NodePath> {
+    fn into_arg<'arg>(self) -> CowArg<'arg, NodePath> {
         CowArg::Owned(NodePath::from(self))
     }
 }
@@ -532,7 +690,7 @@ impl ArgPassing for ByObject {
     type Output<'r, T: 'r> = &'r T;
 
     type FfiOutput<'f, T>
-        = ObjectArg
+        = ObjectArg<'f>
     where
         T: GodotType + 'f;
 
@@ -545,13 +703,13 @@ impl ArgPassing for ByObject {
         value.to_godot().clone()
     }
 
-    fn ref_to_ffi<T>(value: &T) -> ObjectArg
+    fn ref_to_ffi<T>(value: &T) -> ObjectArg<'_>
     where
         T: ToGodot<Pass = Self>,
         T::Via: GodotType,
     {
         let obj_ref: &T::Via = value.to_godot(); // implements GodotType.
-        unsafe { obj_ref.as_object_arg() }
+        obj_ref.as_object_arg()
     }
 }
 
@@ -606,3 +764,35 @@ where
 
 #[doc(hidden)] // Easier for internal use.
 pub type ToArg<'r, Via, Pass> = <Pass as ArgPassing>::Output<'r, Via>;
+
+/// This type exists only as a place to add doctests for `AsArg`, which do not need to be in the public documentation.
+///
+/// `AsArg<Option<Gd<UserClass>>` can be used with signals correctly:
+///
+/// ```no_run
+/// # use godot::prelude::*;
+/// #[derive(GodotClass)]
+/// #[class(init, base = Node)]
+/// struct MyClass {
+///     base: Base<Node>
+/// }
+///
+/// #[godot_api]
+/// impl MyClass {
+///     #[signal]
+///     fn signal_optional_user_obj(arg1: Option<Gd<MyClass>>);
+///
+///     fn foo(&mut self) {
+///         let arg = self.to_gd();
+///         // Directly:
+///         self.signals().signal_optional_user_obj().emit(&arg);
+///         // Via Some:
+///         self.signals().signal_optional_user_obj().emit(Some(&arg));
+///         // With None (Note: Gd::null_arg() is restricted to engine classes):
+///         self.signals().signal_optional_user_obj().emit(None::<Gd<MyClass>>.as_ref());
+///     }
+/// }
+/// ```
+///
+#[allow(dead_code)]
+struct PhantomAsArgDoctests;

@@ -25,7 +25,7 @@ pub fn make_imports() -> TokenStream {
     quote! {
         use godot_ffi as sys;
         use crate::builtin::*;
-        use crate::meta::{AsArg, ClassName, CowArg, InParamTuple, OutParamTuple, ParamTuple, RefArg, Signature};
+        use crate::meta::{AsArg, ClassId, CowArg, InParamTuple, OutParamTuple, ParamTuple, RefArg, Signature};
         use crate::classes::native::*;
         use crate::classes::Object;
         use crate::obj::Gd;
@@ -41,7 +41,7 @@ pub fn c_str(string: &str) -> Literal {
 pub fn make_string_name(identifier: &str) -> TokenStream {
     let lit = c_str(identifier);
 
-    quote! { StringName::from(#lit) }
+    quote! { StringName::__cstr(#lit) }
 }
 
 pub fn make_sname_ptr(identifier: &str) -> TokenStream {
@@ -83,6 +83,14 @@ pub fn lifetime(s: &str) -> TokenStream {
     let tk_lifetime = TokenTree::Ident(ident(s));
 
     TokenStream::from_iter([tk_apostrophe, tk_lifetime])
+}
+
+pub fn make_load_safety_doc() -> TokenStream {
+    quote! {
+        /// # Safety
+        /// - Must be called exactly once during library initialization.
+        /// - All parameters (dependencies) must have been initialized and valid.
+    }
 }
 
 // This function is duplicated in godot-macros\src\util\mod.rs

@@ -1,6 +1,6 @@
 [package]
 name = "godot-ffi"
-version = "0.3.5"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.87"
 license = "MPL-2.0"
@@ -27,7 +27,12 @@ api-4-2-1 = ["godot-bindings/api-4-2-1"]
 api-4-2-2 = ["godot-bindings/api-4-2-2"]
 api-4-3 = ["godot-bindings/api-4-3"]
 api-4-4 = ["godot-bindings/api-4-4"]
+api-4-5 = ["godot-bindings/api-4-5"]
 # ]]
+
+# Safeguard levels (see godot/lib.rs for detailed documentation).
+safeguards-dev-balanced = ["godot-bindings/safeguards-dev-balanced"]
+safeguards-release-disengaged = ["godot-bindings/safeguards-release-disengaged"]
 
 [dependencies]
 
@@ -36,11 +41,11 @@ libc = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 # Only needed for WASM identifier generation.
-godot-macros = { path = "../godot-macros", version = "=0.3.5", features = ["experimental-wasm"] }
+godot-macros = { path = "../godot-macros", version = "=0.4.2", features = ["experimental-wasm"] }
 
 [build-dependencies]
-godot-bindings = { path = "../godot-bindings", version = "=0.3.5" }
-godot-codegen = { path = "../godot-codegen", version = "=0.3.5" }
+godot-bindings = { path = "../godot-bindings", version = "=0.4.2" }
+godot-codegen = { path = "../godot-codegen", version = "=0.4.2" }
 
 # https://docs.rs/about/metadata
 [package.metadata.docs.rs]

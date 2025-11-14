@@ -300,28 +300,40 @@ pub trait Function: fmt::Display {
     fn name(&self) -> &str {
         &self.common().name
     }
+
     /// Rust name as `Ident`. Might be cached in future.
     fn name_ident(&self) -> Ident {
         safe_ident(self.name())
     }
+
     fn godot_name(&self) -> &str {
         &self.common().godot_name
     }
+
     fn params(&self) -> &[FnParam] {
         &self.common().parameters
     }
+
     fn return_value(&self) -> &FnReturn {
         &self.common().return_value
     }
+
     fn is_vararg(&self) -> bool {
         self.common().is_vararg
     }
+
     fn is_private(&self) -> bool {
         self.common().is_private
     }
+
     fn is_virtual(&self) -> bool {
         matches!(self.direction(), FnDirection::Virtual { .. })
     }
+
+    fn is_generic(&self) -> bool {
+        matches!(self.return_value().type_, Some(RustTy::GenericArray))
+    }
+
     fn direction(&self) -> FnDirection {
         self.common().direction
     }
@@ -509,45 +521,91 @@ pub struct FnParam {
 }
 
 impl FnParam {
-    pub fn new_range(method_args: &Option<Vec<JsonMethodArg>>, ctx: &mut Context) -> Vec<FnParam> {
-        option_as_slice(method_args)
-            .iter()
-            .map(|arg| Self::new(arg, ctx))
-            .collect()
+    /// Creates a new parameter builder for constructing function parameters with configurable options.
+    pub fn builder() -> FnParamBuilder {
+        FnParamBuilder::new()
+    }
+}
+
+/// Builder for constructing `FnParam` instances with configurable enum replacements and default value handling.
+pub struct FnParamBuilder {
+    replacements: EnumReplacements,
+    no_defaults: bool,
+}
+
+impl FnParamBuilder {
+    /// Creates a new parameter builder with default settings (no replacements, defaults enabled).
+    pub fn new() -> Self {
+        Self {
+            replacements: &[],
+            no_defaults: false,
+        }
     }
 
-    pub fn new_range_no_defaults(
+    /// Configures the builder to use specific enum replacements.
+    pub fn enum_replacements(mut self, replacements: EnumReplacements) -> Self {
+        self.replacements = replacements;
+        self
+    }
+
+    /// Configures the builder to exclude default values from generated parameters.
+    pub fn no_defaults(mut self) -> Self {
+        self.no_defaults = true;
+        self
+    }
+
+    /// Builds a single function parameter from the provided JSON method argument.
+    pub fn build_single(self, method_arg: &JsonMethodArg, ctx: &mut Context) -> FnParam {
+        self.build_single_impl(method_arg, ctx)
+    }
+
+    /// Builds a vector of function parameters from the provided JSON method arguments.
+    pub fn build_many(
+        self,
         method_args: &Option<Vec<JsonMethodArg>>,
         ctx: &mut Context,
     ) -> Vec<FnParam> {
         option_as_slice(method_args)
             .iter()
-            .map(|arg| Self::new_no_defaults(arg, ctx))
+            .map(|arg| self.build_single_impl(arg, ctx))
             .collect()
     }
 
-    pub fn new(method_arg: &JsonMethodArg, ctx: &mut Context) -> FnParam {
+    /// Core implementation for processing a single JSON method argument into a `FnParam`.
+    fn build_single_impl(&self, method_arg: &JsonMethodArg, ctx: &mut Context) -> FnParam {
         let name = safe_ident(&method_arg.name);
         let type_ = conv::to_rust_type(&method_arg.type_, method_arg.meta.as_ref(), ctx);
-        let default_value = method_arg
-            .default_value
-            .as_ref()
-            .map(|v| conv::to_rust_expr(v, &type_));
+
+        // Apply enum replacement if one exists for this parameter
+        let matching_replacement = self
+            .replacements
+            .iter()
+            .find(|(p, ..)| *p == method_arg.name);
+        let type_ = if let Some((_, enum_name, is_bitfield)) = matching_replacement {
+            if !type_.is_integer() {
+                panic!(
+                    "Parameter `{}` is of type {}, but can only replace int with enum",
+                    method_arg.name, type_
+                );
+            }
+            conv::to_enum_type_uncached(enum_name, *is_bitfield)
+        } else {
+            type_
+        };
+
+        let default_value = if self.no_defaults {
+            None
+        } else {
+            method_arg
+                .default_value
+                .as_ref()
+                .map(|v| conv::to_rust_expr(v, &type_))
+        };
 
         FnParam {
             name,
             type_,
             default_value,
-        }
-    }
-
-    /// `impl AsArg<Gd<T>>` for object parameters. Only set if requested and `T` is an engine class.
-    pub fn new_no_defaults(method_arg: &JsonMethodArg, ctx: &mut Context) -> FnParam {
-        FnParam {
-            name: safe_ident(&method_arg.name),
-            type_: conv::to_rust_type(&method_arg.type_, method_arg.meta.as_ref(), ctx),
-            //type_: to_rust_type(&method_arg.type_, &method_arg.meta, ctx),
-            default_value: None,
         }
     }
 }
@@ -572,8 +630,37 @@ pub struct FnReturn {
 
 impl FnReturn {
     pub fn new(return_value: &Option<JsonMethodReturn>, ctx: &mut Context) -> Self {
+        Self::with_enum_replacements(return_value, &[], ctx)
+    }
+
+    pub fn with_generic_builtin(generic_type: RustTy) -> Self {
+        Self {
+            decl: generic_type.return_decl(),
+            type_: Some(generic_type),
+        }
+    }
+
+    pub fn with_enum_replacements(
+        return_value: &Option<JsonMethodReturn>,
+        replacements: EnumReplacements,
+        ctx: &mut Context,
+    ) -> Self {
         if let Some(ret) = return_value {
             let ty = conv::to_rust_type(&ret.type_, ret.meta.as_ref(), ctx);
+
+            // Apply enum replacement if one exists for return type (indicated by empty string)
+            let matching_replacement = replacements.iter().find(|(p, ..)| p.is_empty());
+            let ty = if let Some((_, enum_name, is_bitfield)) = matching_replacement {
+                if !ty.is_integer() {
+                    panic!(
+                        "Return type is of type {}, but can only replace int with enum",
+                        ty
+                    );
+                }
+                conv::to_enum_type_uncached(enum_name, *is_bitfield)
+            } else {
+                ty
+            };
 
             Self {
                 decl: ty.return_decl(),
@@ -589,16 +676,17 @@ impl FnReturn {
 
     pub fn type_tokens(&self) -> TokenStream {
         match &self.type_ {
-            Some(RustTy::EngineClass { tokens, .. }) => {
-                quote! { Option<#tokens> }
-            }
-            Some(ty) => {
-                quote! { #ty }
-            }
-            _ => {
-                quote! { () }
-            }
+            Some(ty) => ty.to_token_stream(),
+            _ => quote! { () },
         }
+    }
+
+    pub fn generic_params(&self) -> Option<TokenStream> {
+        self.type_.as_ref()?.generic_params()
+    }
+
+    pub fn where_clause(&self) -> Option<TokenStream> {
+        self.type_.as_ref()?.where_clause()
     }
 
     pub fn call_result_decl(&self) -> TokenStream {
@@ -606,6 +694,14 @@ impl FnReturn {
         quote! { -> Result<#ret, crate::meta::error::CallError> }
     }
 }
+
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+// Int->enum replacements
+
+/// Replacement of int->enum in engine APIs; each tuple being `(param_name, enum_type, is_bitfield)`.
+///
+/// Empty string `""` is used as `param_name` to denote return type replacements.
+pub type EnumReplacements = &'static [(&'static str, &'static str, bool)];
 
 // ----------------------------------------------------------------------------------------------------------------------------------------------
 // Godot type
@@ -624,42 +720,57 @@ pub enum RustTy {
     /// `bool`, `Vector3i`, `Array`, `GString`
     BuiltinIdent { ty: Ident, arg_passing: ArgPassing },
 
+    /// Pointers declared in `gdextension_interface` such as `sys::GDExtensionInitializationFunction`
+    /// used as parameters in some APIs.
+    SysPointerType { tokens: TokenStream },
+
     /// `Array<i32>`
     ///
     /// Note that untyped arrays are mapped as `BuiltinIdent("Array")`.
     BuiltinArray { elem_type: TokenStream },
 
+    /// Will be included as `Array<T>` in the generated source.
+    ///
+    /// Set by [`builtin_method_generic_ret`](crate::special_cases::builtin_method_generic_ret)
+    GenericArray,
+
     /// C-style raw pointer to a `RustTy`.
     RawPointer { inner: Box<RustTy>, is_const: bool },
 
-    /// `Array<Gd<PhysicsBody3D>>`
+    /// `Array<Gd<PhysicsBody3D>>`. Never contains `Option` elements.
     EngineArray {
         tokens: TokenStream,
-        #[allow(dead_code)] // only read in minimal config
+
+        #[allow(dead_code)] // Only read in minimal config.
         elem_class: String,
     },
 
     /// `module::Enum` or `module::Bitfield`
     EngineEnum {
         tokens: TokenStream,
-        /// `None` for globals
-        #[allow(dead_code)] // only read in minimal config
+
+        /// `None` for globals.
+        #[allow(dead_code)] // Only read in minimal config.
         surrounding_class: Option<String>,
+
         is_bitfield: bool,
     },
 
     /// `Gd<Node>`
     EngineClass {
-        /// Tokens with full `Gd<T>` (e.g. used in return type position).
-        tokens: TokenStream,
+        /// Tokens with full `Gd<T>`, never `Option<Gd<T>>`.
+        gd_tokens: TokenStream,
 
-        /// Signature declaration with `impl AsArg<Gd<T>>`.
+        /// Signature declaration with `impl AsArg<Gd<T>>` or `impl AsArg<Option<Gd<T>>>`.
         impl_as_object_arg: TokenStream,
 
-        /// only inner `T`
-        #[allow(dead_code)]
-        // only read in minimal config + RustTy::default_extender_field_decl()
+        /// Only inner `Node`.
         inner_class: Ident,
+
+        /// Whether this object parameter/return is nullable in the GDExtension API.
+        ///
+        /// Defaults to true (nullable). Only false when meta="required".
+        is_nullable: bool,
     },
 
     /// Receiver type of default parameters extender constructor.
@@ -678,9 +789,58 @@ impl RustTy {
 
     pub fn return_decl(&self) -> TokenStream {
         match self {
-            Self::EngineClass { tokens, .. } => quote! { -> Option<#tokens> },
-            other => quote! { -> #other },
+            Self::GenericArray => quote! { -> Array<Ret> },
+            _ => quote! { -> #self },
         }
+    }
+
+    /// Returns tokens without `Option<T>` wrapper, even for nullable engine classes.
+    ///
+    /// For `EngineClass`, always returns `Gd<T>` regardless of nullability. For other types, behaves the same as `ToTokens`.
+    // Might also be useful to directly extract inner `gd_tokens` field.
+    pub fn tokens_non_null(&self) -> TokenStream {
+        match self {
+            Self::EngineClass { gd_tokens, .. } => gd_tokens.clone(),
+            other => other.to_token_stream(),
+        }
+    }
+
+    pub fn generic_params(&self) -> Option<TokenStream> {
+        if matches!(self, Self::GenericArray) {
+            Some(quote! { < Ret > })
+        } else {
+            None
+        }
+    }
+
+    pub fn where_clause(&self) -> Option<TokenStream> {
+        if matches!(self, Self::GenericArray) {
+            Some(quote! {
+                where
+                    Ret: crate::meta::ArrayElement,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn is_integer(&self) -> bool {
+        let RustTy::BuiltinIdent { ty, .. } = self else {
+            return false;
+        };
+
+        // isize/usize currently not supported (2025-09), but this is more future-proof.
+        matches!(
+            ty.to_string().as_str(),
+            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "isize" | "usize"
+        )
+    }
+
+    pub fn is_sys_pointer(&self) -> bool {
+        let RustTy::RawPointer { inner, .. } = self else {
+            return false;
+        };
+        matches!(**inner, RustTy::SysPointerType { .. })
     }
 }
 
@@ -699,8 +859,21 @@ impl ToTokens for RustTy {
             } => quote! { *mut #inner }.to_tokens(tokens),
             RustTy::EngineArray { tokens: path, .. } => path.to_tokens(tokens),
             RustTy::EngineEnum { tokens: path, .. } => path.to_tokens(tokens),
-            RustTy::EngineClass { tokens: path, .. } => path.to_tokens(tokens),
+            RustTy::EngineClass {
+                is_nullable,
+                gd_tokens: path,
+                ..
+            } => {
+                // Return nullable-aware type: Option<Gd<T>> if nullable, else Gd<T>.
+                if *is_nullable {
+                    quote! { Option<#path> }.to_tokens(tokens)
+                } else {
+                    path.to_tokens(tokens)
+                }
+            }
             RustTy::ExtenderReceiver { tokens: path } => path.to_tokens(tokens),
+            RustTy::GenericArray => quote! { Array<Ret> }.to_tokens(tokens),
+            RustTy::SysPointerType { tokens: path } => path.to_tokens(tokens),
         }
     }
 }

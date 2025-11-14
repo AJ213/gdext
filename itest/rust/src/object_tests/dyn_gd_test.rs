@@ -4,7 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-
+use godot::global::godot_str;
 // Test that all important dyn-related symbols are in the prelude.
 use godot::prelude::*;
 
@@ -431,6 +431,54 @@ fn dyn_gd_store_in_godot_array() {
 }
 
 #[itest]
+fn dyn_gd_as_arg_inherited_base() {
+    let refc_health = Gd::from_object(RefcHealth { hp: 42 }).into_dyn();
+    let node_health = foreign::NodeHealth::new_alloc().into_dyn();
+    let typed_none = None::<&DynGd<RefcHealth, dyn Health>>;
+
+    // Array<DynGd<Base, D>>.
+    // See: https://github.com/godot-rust/gdext/pull/1345.
+    let array: Array<DynGd<RefcHealth, dyn Health>> = array![&refc_health];
+    assert_eq!(array.len(), 1);
+    let first = array.at(0);
+    assert_eq!(first.dyn_bind().get_hitpoints(), 42);
+
+    // Array<DynGd>.
+    let array: Array<DynGd<Object, dyn Health>> = array![&refc_health, &node_health];
+    assert_eq!(array.len(), 2);
+
+    let first = array.at(0);
+    assert_eq!(first.dyn_bind().get_hitpoints(), 42);
+
+    let second = array.at(1);
+    assert_eq!(second.dyn_bind().get_hitpoints(), 100);
+
+    // Array<Option<DynGd>>.
+    let opt_array: Array<Option<DynGd<Object, dyn Health>>> = array![
+        Some(&refc_health),
+        Some(&node_health),
+        typed_none,
+        DynGd::null_arg(),
+    ];
+    assert_eq!(opt_array.len(), 4);
+
+    let first = opt_array.at(0).expect("element 0 is Some");
+    assert_eq!(first.dyn_bind().get_hitpoints(), 42);
+
+    let second = opt_array.at(1).expect("element 1 is Some");
+    assert_eq!(second.dyn_bind().get_hitpoints(), 100);
+
+    let third = opt_array.at(2);
+    assert!(third.is_none(), "element 2 is None");
+
+    let fourth = opt_array.at(3);
+    assert!(fourth.is_none(), "element 3 is None (null_arg)");
+
+    // Clean up manually managed objects.
+    opt_array.at(1).unwrap().free();
+}
+
+#[itest]
 fn dyn_gd_error_unregistered_trait() {
     trait UnrelatedTrait {}
     let node = foreign::NodeHealth::new_alloc().into_dyn::<dyn Health>();
@@ -554,7 +602,7 @@ struct RefcHealth {
 #[godot_api]
 impl IRefCounted for RefcHealth {
     fn to_string(&self) -> GString {
-        format!("RefcHealth(hp={})", self.hp).into()
+        godot_str!("RefcHealth(hp={})", self.hp)
     }
 }
 

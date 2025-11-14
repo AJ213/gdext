@@ -91,10 +91,8 @@ pub fn transform_inherent_impl(
     let (funcs, signals) = process_godot_fns(&class_name, &mut impl_block, meta.secondary)?;
     let consts = process_godot_constants(&mut impl_block)?;
 
-    #[cfg(all(feature = "register-docs", since_api = "4.3"))]
-    let docs = crate::docs::document_inherent_impl(&funcs, &consts, &signals);
-    #[cfg(not(all(feature = "register-docs", since_api = "4.3")))]
-    let docs = quote! {};
+    let inherent_impl_docs =
+        crate::docs::make_trait_docs_registration(&funcs, &consts, &signals, &class_name, &prv);
 
     // Container struct holding names of all registered #[func]s.
     // The struct is declared by #[derive(GodotClass)].
@@ -127,17 +125,20 @@ pub fn transform_inherent_impl(
     let method_storage_name = format_ident!("__registration_methods_{class_name}");
     let constants_storage_name = format_ident!("__registration_constants_{class_name}");
 
-    let fill_storage = quote! {
-        ::godot::sys::plugin_execute_pre_main!({
-            #method_storage_name.lock().unwrap().push(|| {
-                #( #method_registrations )*
-                #( #signal_registrations )*
-            });
+    let fill_storage = {
+        quote! {
+            ::godot::sys::plugin_execute_pre_main!({
+                #method_storage_name.lock().unwrap().push(|| {
+                    #( #method_registrations )*
+                    #( #signal_registrations )*
+                });
 
-            #constants_storage_name.lock().unwrap().push(|| {
-                #constant_registration
+                #constants_storage_name.lock().unwrap().push(|| {
+                    #constant_registration
+                });
+
             });
-        });
+        }
     };
 
     if !meta.secondary {
@@ -175,7 +176,7 @@ pub fn transform_inherent_impl(
 
         let class_registration = quote! {
             ::godot::sys::plugin_add!(#prv::__GODOT_PLUGIN_REGISTRY; #prv::ClassPlugin::new::<#class_name>(
-                #prv::PluginItem::InherentImpl(#prv::InherentImpl::new::<#class_name>(#docs))
+                #prv::PluginItem::InherentImpl(#prv::InherentImpl::new::<#class_name>())
             ));
         };
 
@@ -189,6 +190,7 @@ pub fn transform_inherent_impl(
                 #( #func_name_constants )*
             }
             #signal_symbol_types
+            #inherent_impl_docs
         };
 
         Ok(result)
@@ -202,6 +204,7 @@ pub fn transform_inherent_impl(
             impl #funcs_collection {
                 #( #func_name_constants )*
             }
+            #inherent_impl_docs
         };
 
         Ok(result)
@@ -288,8 +291,13 @@ fn process_godot_fns(
                 };
 
                 // Clone might not strictly be necessary, but the 2 other callers of into_signature_info() are better off with pass-by-value.
-                let signature_info =
+                let mut signature_info =
                     into_signature_info(signature.clone(), class_name, gd_self_parameter.is_some());
+
+                // Default value expressions from `#[opt(default = EXPR)]`; None for required parameters.
+                let all_param_maybe_defaults = parse_default_expressions(&mut function.params)?;
+                signature_info.optional_param_default_exprs =
+                    validate_default_exprs(all_param_maybe_defaults, &signature_info.param_idents)?;
 
                 // For virtual methods, rename/mangle existing user method and create a new method with the original name,
                 // which performs a dynamic dispatch.
@@ -422,7 +430,11 @@ fn add_virtual_script_call(
     rename: &Option<String>,
     gd_self_parameter: Option<Ident>,
 ) -> String {
-    assert!(cfg!(since_api = "4.3"));
+    #[allow(clippy::assertions_on_constants)]
+    {
+        // Without braces, clippy removes the #[allow] for some reason...
+        assert!(cfg!(since_api = "4.3"));
+    }
 
     // Update parameter names, so they can be forwarded (e.g. a "_" declared by the user cannot).
     let is_params = function.params.iter_mut().skip(1); // skip receiver.
@@ -459,7 +471,7 @@ fn add_virtual_script_call(
 
     let code = quote! {
         let object_ptr = #object_ptr;
-        let method_sname = ::godot::builtin::StringName::from(#method_name_cstr);
+        let method_sname = ::godot::builtin::StringName::__cstr(#method_name_cstr);
         let method_sname_ptr = method_sname.string_sys();
         let has_virtual_override = unsafe { ::godot::private::has_virtual_script_method(object_ptr, method_sname_ptr) };
 
@@ -670,6 +682,70 @@ fn parse_constant_attr(
     parser.finish()?;
 
     Ok(AttrParseResult::Constant(attr.value.clone()))
+}
+
+/// Parses `#[opt(default = ...)]` parameter attributes and validates that optional parameters only appear at the end.
+///
+/// Returns a vector of optional default values, one per parameter (skipping receiver).
+fn parse_default_expressions(
+    params: &mut venial::Punctuated<venial::FnParam>,
+) -> ParseResult<Vec<Option<TokenStream>>> {
+    let mut res = vec![];
+
+    for param in params.iter_mut() {
+        let typed_param = match &mut param.0 {
+            venial::FnParam::Receiver(_) => continue,
+            venial::FnParam::Typed(fn_typed_param) => fn_typed_param,
+        };
+
+        let optional_value = match KvParser::parse_remove(&mut typed_param.attributes, "opt")? {
+            None => None,
+            Some(mut parser) => Some(parser.handle_expr_required("default")?),
+        };
+
+        res.push(optional_value);
+    }
+
+    Ok(res)
+}
+
+/// Validates that default parameters only appear at the end of the parameter list.
+/// Consumes the input and returns only the non-None default expressions.
+fn validate_default_exprs(
+    all_param_maybe_defaults: Vec<Option<TokenStream>>,
+    param_idents: &[Ident],
+) -> ParseResult<Vec<TokenStream>> {
+    let mut must_be_default = false;
+    let mut result = Vec::new();
+
+    for (i, param) in all_param_maybe_defaults.into_iter().enumerate() {
+        match (param, must_be_default) {
+            // First optional parameter encountered.
+            (Some(default_expr), false) => {
+                must_be_default = true;
+                result.push(default_expr);
+            }
+
+            // Subsequent optional parameters.
+            (Some(default_expr), true) => {
+                result.push(default_expr);
+            }
+
+            // Required parameter before any optional ones.
+            (None, false) => {}
+
+            // Required parameter after optional ones.
+            (None, true) => {
+                let name = &param_idents[i];
+                return bail!(
+                    name,
+                    "parameter `{name}` must have a default value, because previous parameters are already optional",
+                );
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 // ----------------------------------------------------------------------------------------------------------------------------------------------

@@ -109,6 +109,8 @@ struct SignalDetails<'a> {
     signal_name_str: String,
     /// `#[cfg(..)] #[cfg(..)]`
     signal_cfg_attrs: Vec<&'a venial::Attribute>,
+    /// `///` `#[doc = ...]`
+    signal_doc_attrs: Vec<&'a venial::Attribute>,
     /// `MyClass_MySignal`
     individual_struct_name: Ident,
     /// Visibility, e.g. `pub(crate)`
@@ -146,6 +148,11 @@ impl<'a> SignalDetails<'a> {
             .into_iter()
             .collect();
 
+        // Preserve docs.
+        let signal_doc_attrs = util::extract_doc_attrs(external_attributes)
+            .into_iter()
+            .collect();
+
         let param_tuple = quote! { ( #( #param_types, )* ) };
         let signal_name = &fn_signature.name;
         let individual_struct_name = format_ident!("__godot_Signal_{}_{}", class_name, signal_name);
@@ -169,6 +176,7 @@ impl<'a> SignalDetails<'a> {
             signal_name,
             signal_name_str: fn_signature.name.to_string(),
             signal_cfg_attrs,
+            signal_doc_attrs,
             individual_struct_name,
             vis_marker: vis_marker.clone(),
             // vis_classified,
@@ -285,6 +293,7 @@ impl SignalCollection {
             signal_name,
             signal_name_str,
             signal_cfg_attrs,
+            signal_doc_attrs,
             individual_struct_name,
             vis_marker,
             ..
@@ -293,6 +302,7 @@ impl SignalCollection {
         self.provider_methods.push(quote! {
             // Deliberately not #[doc(hidden)] for IDE completion.
             #(#signal_cfg_attrs)*
+            #(#signal_doc_attrs)*
             // Note: this could be `pub` always and would still compile (maybe warning with the following message).
             //   associated function `SignalCollection::my_signal` is reachable at visibility `pub(crate)`
             //
@@ -422,7 +432,7 @@ fn make_signal_symbols(
     // Earlier implementation generated a simplified code when no #[signal] was declared: only WithSignals/WithUserSignals impl, but no own
     // collection, instead the associated type pointing to the base class. This has however some problems:
     // * Part of the reason for user-defined collection is to store UserSignalObject instead of Gd, which can store &mut self.
-    //   This is necessary for self.signals().some_base_signal().emit(), if such a signal is connected to Self::method_mut;
+    //   This is necessary for self.signals().some_base_signal().emit(), if such a signal is connected to Self::connect*() taking &mut self;
     //   Gd would cause a borrow error.
     // * Once we add Rust-Rust inheritance, we'd need to differentiate case again, which can be tricky since #[godot_api] has no information
     //   about the base class.

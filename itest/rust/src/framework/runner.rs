@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use godot::builtin::{vslice, Array, Callable, GString, Variant, VariantArray};
 use godot::classes::{Engine, Node, Os};
 use godot::global::godot_error;
-use godot::obj::Gd;
+use godot::obj::{Gd, Singleton};
 use godot::register::{godot_api, GodotClass};
 
 use super::AsyncRustTestCase;
@@ -376,7 +376,7 @@ impl IntegrationTests {
             print_bench_pre(bench.name, bench.file, last_file.as_deref());
             last_file = Some(bench.file.to_string());
 
-            let result = bencher::run_benchmark(bench.function, bench.repetitions);
+            let result = (bench.function)();
             print_bench_post(result);
         }
     }
@@ -459,7 +459,6 @@ fn check_async_test_task(
     ctx: &TestContext,
 ) {
     use godot::classes::object::ConnectFlags;
-    use godot::obj::EngineBitfield;
     use godot::task::has_godot_task_panicked;
 
     if !task_handle.is_pending() {
@@ -474,7 +473,7 @@ fn check_async_test_task(
     let mut callback = Some(on_test_finished);
     let mut probably_task_handle = Some(task_handle);
 
-    let deferred = Callable::from_local_fn("run_async_rust_test", move |_| {
+    let deferred = Callable::from_fn("run_async_rust_test", move |_| {
         check_async_test_task(
             probably_task_handle
                 .take()
@@ -484,15 +483,12 @@ fn check_async_test_task(
                 .expect("Callable should not be called multiple times!"),
             &next_ctx,
         );
-        Ok(Variant::nil())
     });
 
     ctx.scene_tree
         .get_tree()
         .expect("The itest scene tree node is part of a Godot SceneTree")
-        .connect_ex("process_frame", &deferred)
-        .flags(ConnectFlags::ONE_SHOT.ord() as u32)
-        .done();
+        .connect_flags("process_frame", &deferred, ConnectFlags::ONE_SHOT);
 }
 
 fn print_test_pre(test_case: &str, test_file: &str, last_file: Option<&str>, flush: bool) {
@@ -550,9 +546,17 @@ fn print_bench_pre(benchmark: &str, bench_file: &str, last_file: Option<&str>) {
 }
 
 fn print_bench_post(result: BenchResult) {
-    for stat in result.stats.iter() {
-        print!(" {:>10.3}μs", stat.as_nanos() as f64 / 1000.0);
+    match result {
+        Ok(measured) => {
+            for stat in measured.stats.iter() {
+                print!(" {:>10.3}μs", stat.as_nanos() as f64 / 1000.0);
+            }
+        }
+        Err(msg) => {
+            print!("   {FMT_RED}ERROR: {msg}{FMT_END}");
+        }
     }
+
     println!();
 }
 

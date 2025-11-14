@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::panic;
 
 use godot::classes::{Engine, GDScript, Node, Os, SceneTree};
-use godot::obj::{Gd, NewGd};
+use godot::obj::{Gd, NewGd, Singleton};
 use godot::sys;
 
 mod bencher;
@@ -158,8 +158,7 @@ pub struct RustBenchmark {
     pub file: &'static str,
     #[allow(dead_code)]
     pub line: u32,
-    pub function: fn(),
-    pub repetitions: usize,
+    pub function: fn() -> BenchResult,
 }
 
 pub fn passes_filter(filters: &[String], test_name: &str) -> bool {
@@ -198,6 +197,25 @@ pub fn expect_panic(context: &str, code: impl FnOnce()) {
         panic.is_err(),
         "code should have panicked but did not: {context}",
     );
+}
+
+/// Run for code that should panic in *strict* and *balanced* safeguard levels, but cause UB in *disengaged* level.
+///
+/// The code is not executed for the latter.
+pub fn expect_panic_or_ub(_context: &str, _code: impl FnOnce()) {
+    #[cfg(safeguards_balanced)]
+    expect_panic(_context, _code);
+}
+
+/// Run for code that should panic in *strict* and *balanced* safeguard levels, but do nothing in *disengaged* level.
+///
+/// The code is executed either way, and must not cause UB.
+pub fn expect_panic_or_nothing(_context: &str, code: impl FnOnce()) {
+    #[cfg(safeguards_balanced)]
+    expect_panic(_context, code);
+
+    #[cfg(not(safeguards_balanced))]
+    code()
 }
 
 pin_project_lite::pin_project! {
@@ -241,14 +259,6 @@ pub fn expect_async_panic<T: std::future::Future>(
     future: T,
 ) -> ExpectPanicFuture<T> {
     ExpectPanicFuture { context, future }
-}
-
-pub fn expect_debug_panic_or_release_ok(_context: &str, code: impl FnOnce()) {
-    #[cfg(debug_assertions)]
-    expect_panic(_context, code);
-
-    #[cfg(not(debug_assertions))]
-    code()
 }
 
 /// Run code asynchronously, at the very start of the next _process_ frame (before `INode::process()`).
@@ -311,6 +321,14 @@ pub fn suppress_godot_print(mut f: impl FnMut()) {
 /// See <https://github.com/godotengine/godot/issues/86264>.
 pub fn runs_release() -> bool {
     !Os::singleton().is_debug_build()
+}
+
+/// Whether we are running in GitHub Actions CI.
+///
+/// Must not be used to influence test logic. Only for logging and diagnostics.
+#[allow(dead_code)]
+pub fn runs_github_ci() -> bool {
+    std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
 }
 
 /// Create a `GDScript` script from code, compiles and returns it.

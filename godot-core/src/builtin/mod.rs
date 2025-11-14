@@ -54,6 +54,9 @@ pub mod __prelude_reexport {
     #[allow(deprecated)]
     #[rustfmt::skip] // Do not reorder.
     pub use crate::dict;
+
+    #[cfg(feature = "trace")] // Test only.
+    pub use crate::static_sname;
 }
 
 pub use __prelude_reexport::*;
@@ -62,6 +65,7 @@ pub use __prelude_reexport::*;
 pub mod math;
 
 /// Iterator types for arrays and dictionaries.
+// Might rename this to `collections` or so.
 pub mod iter {
     pub use super::collections::iterators::*;
 }
@@ -112,6 +116,19 @@ mod real_inner;
 pub mod inner {
     pub use crate::gen::builtin_classes::*;
 }
+
+#[macro_export]
+macro_rules! declare_hash_u32_method {
+    ( $( $docs:tt )+ ) => {
+        $( $docs )+
+        pub fn hash_u32(&self) -> u32 {
+            self.as_inner().hash().try_into().expect("Godot hashes are uint32_t")
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+// Conversion functions
 
 pub(crate) fn to_i64(i: usize) -> i64 {
     i.try_into().unwrap()

@@ -12,7 +12,9 @@ use godot::classes::RefCounted;
 use godot::meta::{ElementType, FromGodot, ToGodot};
 use godot::obj::NewGd;
 
-use crate::framework::{assert_match, create_gdscript, expect_panic, itest};
+use crate::framework::{
+    assert_match, create_gdscript, expect_panic, expect_panic_or_nothing, itest,
+};
 
 #[itest]
 fn dictionary_default() {
@@ -126,15 +128,22 @@ fn dictionary_hash() {
         "bar": true,
     };
 
-    assert_eq!(a.hash(), b.hash(), "equal dictionaries have same hash");
+    assert_eq!(
+        a.hash_u32(),
+        b.hash_u32(),
+        "equal dictionaries have same hash"
+    );
     assert_ne!(
-        a.hash(),
-        c.hash(),
+        a.hash_u32(),
+        c.hash_u32(),
         "dictionaries with reordered content have different hash"
     );
 
     // NaNs are not equal (since Godot 4.2) but share same hash.
-    assert_eq!(vdict! {772: f32::NAN}.hash(), vdict! {772: f32::NAN}.hash());
+    assert_eq!(
+        vdict! {772: f32::NAN}.hash_u32(),
+        vdict! {772: f32::NAN}.hash_u32()
+    );
 }
 
 #[itest]
@@ -272,13 +281,13 @@ fn dictionary_set() {
 fn dictionary_set_readonly() {
     let mut dictionary = vdict! { "zero": 0, "one": 1 }.into_read_only();
 
-    #[cfg(debug_assertions)]
-    expect_panic("Mutating read-only dictionary in Debug mode", || {
-        dictionary.set("zero", 2);
-    });
-
-    #[cfg(not(debug_assertions))]
-    dictionary.set("zero", 2); // silently fails.
+    // Fails silently in safeguards-disengaged (no UB).
+    expect_panic_or_nothing(
+        "Mutating read-only dictionary (safeguards-balanced)",
+        || {
+            dictionary.set("zero", 2);
+        },
+    );
 
     assert_eq!(dictionary.at("zero"), 0.to_variant());
 }
@@ -781,7 +790,7 @@ func variant_script_dict() -> Dictionary[Variant, CustomScriptForDictionaries]:
     );
 
     let mut object = RefCounted::new_gd();
-    object.set_script(&gdscript.to_variant());
+    object.set_script(&gdscript);
 
     // Test all 4 ElementType variants in alternating key/value pattern.
 

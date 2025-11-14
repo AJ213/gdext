@@ -12,9 +12,9 @@ use sys::{interface_fn, ExtVariantType, GodotFfi, GodotNullableFfi, PtrcallType}
 
 use crate::builtin::{Variant, VariantType};
 use crate::meta::error::{ConvertError, FromVariantError};
-use crate::meta::{
-    CallContext, ClassName, FromGodot, GodotConvert, GodotFfiVariant, GodotType, RefArg, ToGodot,
-};
+#[cfg(safeguards_balanced)]
+use crate::meta::CallContext;
+use crate::meta::{ClassId, FromGodot, GodotConvert, GodotFfiVariant, GodotType, RefArg, ToGodot};
 use crate::obj::bounds::{Declarer, DynMemory as _};
 use crate::obj::casts::CastSuccess;
 use crate::obj::rtti::ObjectRtti;
@@ -116,7 +116,7 @@ impl<T: GodotClass> RawGd<T> {
         U: GodotClass,
     {
         self.is_null() // Null can be cast to anything.
-            || self.as_object_ref().is_class(&U::class_name().to_gstring())
+            || self.as_object_ref().is_class(&U::class_id().to_gstring())
     }
 
     /// Returns `Ok(cast_obj)` on success, `Err(self)` on error
@@ -154,7 +154,7 @@ impl<T: GodotClass> RawGd<T> {
     where
         U: GodotClass,
     {
-        //eprintln!("ffi_cast: {} (dyn {}) -> {}", T::class_name(), self.as_non_null().dynamic_class_string(), U::class_name());
+        //eprintln!("ffi_cast: {} (dyn {}) -> {}", T::class_id(), self.as_non_null().dynamic_class_string(), U::class_name());
 
         // `self` may be null when we convert a null-variant into a `Option<Gd<T>>`, since we use `ffi_cast`
         // in the `ffi_from_variant` conversion function to ensure type-correctness. So the chain would be as follows:
@@ -175,7 +175,7 @@ impl<T: GodotClass> RawGd<T> {
         self.check_rtti("ffi_cast");
 
         let cast_object_ptr = unsafe {
-            let class_tag = interface_fn!(classdb_get_class_tag)(U::class_name().string_sys());
+            let class_tag = interface_fn!(classdb_get_class_tag)(U::class_id().string_sys());
             interface_fn!(object_cast_to)(self.obj_sys(), class_tag)
         };
 
@@ -242,7 +242,7 @@ impl<T: GodotClass> RawGd<T> {
     /// # Safety
     /// `self` must not be null.
     pub(crate) unsafe fn as_non_null(&self) -> &Gd<T> {
-        debug_assert!(
+        sys::strict_assert!(
             !self.is_null(),
             "RawGd::as_non_null() called on null pointer; this is UB"
         );
@@ -357,10 +357,10 @@ impl<T: GodotClass> RawGd<T> {
     {
         // Validation object identity.
         self.check_rtti("upcast_ref");
-        debug_assert!(!self.is_null(), "cannot upcast null object refs");
+        sys::balanced_assert!(!self.is_null(), "cannot upcast null object refs");
 
         // In Debug builds, go the long path via Godot FFI to verify the results are the same.
-        #[cfg(debug_assertions)]
+        #[cfg(safeguards_strict)]
         {
             // SAFETY: we forget the object below and do not leave the function before.
             let ffi_dest = self.ffi_cast::<Base>().expect("failed FFI upcast");
@@ -381,26 +381,59 @@ impl<T: GodotClass> RawGd<T> {
         }
     }
 
-    /// Verify that the object is non-null and alive. In Debug mode, additionally verify that it is of type `T` or derived.
+    /// Validates object for use in `RawGd`/`Gd` methods (not FFI boundary calls).
+    ///
+    /// This is used for Rust-side object operations like `bind()`, `clone()`, `ffi_cast()`, etc.
+    /// For FFI boundary calls (generated engine methods), validation happens in signature.rs instead.
+    ///
+    /// # Panics
+    /// If validation fails.
+    #[cfg(safeguards_balanced)]
     pub(crate) fn check_rtti(&self, method_name: &'static str) {
         let call_ctx = CallContext::gd::<T>(method_name);
 
-        let instance_id = self.check_dynamic_type(&call_ctx);
+        // Type check (strict only).
+        #[cfg(safeguards_strict)]
+        self.check_dynamic_type(&call_ctx);
+
+        // SAFETY: check_rtti() is only called for non-null pointers.
+        let instance_id = unsafe { self.instance_id_unchecked().unwrap_unchecked() };
+
+        // Liveness check (balanced + strict).
         classes::ensure_object_alive(instance_id, self.obj_sys(), &call_ctx);
     }
 
-    /// Checks only type, not alive-ness. Used in Gd<T> in case of `free()`.
-    pub(crate) fn check_dynamic_type(&self, call_ctx: &CallContext<'static>) -> InstanceId {
-        debug_assert!(
+    #[cfg(not(safeguards_balanced))]
+    pub(crate) fn check_rtti(&self, _method_name: &'static str) {
+        // Disengaged level: no-op.
+    }
+
+    /// Checks only type, not liveness.
+    ///
+    /// Used in specific scenarios like `Gd<T>::free()` where we need type validation
+    /// but the object may already be dead. This is an internal helper for `check_rtti()`.
+    #[cfg(safeguards_strict)]
+    #[inline]
+    pub(crate) fn check_dynamic_type(&self, call_ctx: &CallContext<'static>) {
+        assert!(
             !self.is_null(),
-            "{call_ctx}: cannot call method on null object",
+            "internal bug: {call_ctx}: cannot call method on null object",
         );
 
         let rtti = self.cached_rtti.as_ref();
 
-        // SAFETY: code surrounding RawGd<T> ensures that `self` is non-null; above is just a sanity check against internal bugs.
+        // SAFETY: RawGd non-null (checked above).
         let rtti = unsafe { rtti.unwrap_unchecked() };
-        rtti.check_type::<T>()
+        rtti.check_type::<T>();
+    }
+
+    /// Creates a validated object for FFI boundary crossing.
+    ///
+    /// This is a convenience wrapper around [`ValidatedObject::validate()`].
+    #[doc(hidden)]
+    #[inline]
+    pub fn validated_object(&self) -> ValidatedObject {
+        ValidatedObject::validate(self)
     }
 
     // Not pub(super) because used by godot::meta::args::ObjectArg.
@@ -422,7 +455,7 @@ where
 {
     /// Hands out a guard for a shared borrow, through which the user instance can be read.
     ///
-    /// See [`crate::obj::Gd::bind()`] for a more in depth explanation.
+    /// See [`Gd::bind()`] for a more in depth explanation.
     // Note: possible names: write/read, hold/hold_mut, r/w, r/rw, ...
     pub(crate) fn bind(&self) -> GdRef<'_, T> {
         self.check_rtti("bind");
@@ -431,7 +464,7 @@ where
 
     /// Hands out a guard for an exclusive borrow, through which the user instance can be read and written.
     ///
-    /// See [`crate::obj::Gd::bind_mut()`] for a more in depth explanation.
+    /// See [`Gd::bind_mut()`] for a more in depth explanation.
     pub(crate) fn bind_mut(&mut self) -> GdMut<'_, T> {
         self.check_rtti("bind_mut");
         GdMut::from_guard(self.storage().unwrap().get_mut())
@@ -509,7 +542,7 @@ where
 
         let ptr: sys::GDExtensionClassInstancePtr = binding.cast();
 
-        #[cfg(debug_assertions)]
+        #[cfg(safeguards_strict)]
         crate::classes::ensure_binding_not_null::<T>(ptr);
 
         self.cached_storage_ptr.set(ptr);
@@ -633,12 +666,12 @@ impl<T: GodotClass> GodotType for RawGd<T> {
         Ok(ffi)
     }
 
-    fn class_name() -> ClassName {
-        T::class_name()
+    fn class_id() -> ClassId {
+        T::class_id()
     }
 
     fn godot_type_name() -> String {
-        T::class_name().to_string()
+        T::class_id().to_string()
     }
 }
 
@@ -677,7 +710,7 @@ impl<T: GodotClass> GodotFfiVariant for RawGd<T> {
 
         raw.with_inc_refcount().owned_cast().map_err(|raw| {
             FromVariantError::WrongClass {
-                expected: T::class_name(),
+                expected: T::class_id(),
             }
             .into_error(raw)
         })
@@ -749,6 +782,44 @@ impl<T: GodotClass> Clone for RawGd<T> {
 impl<T: GodotClass> fmt::Debug for RawGd<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         classes::debug_string_nullable(self, f, "RawGd")
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+// Type-state for already-validated objects before an engine API call
+
+/// Type-state object pointers that have been validated for engine API calls.
+///
+/// Can be passed to [`Signature`](meta::signature::Signature) methods. Performs the following checks depending on safeguard level:
+/// - `disengaged`: no validation.
+/// - `balanced`: liveness check only.
+/// - `strict`: liveness + type inheritance check.
+#[doc(hidden)]
+pub struct ValidatedObject {
+    object_ptr: sys::GDExtensionObjectPtr,
+}
+
+impl ValidatedObject {
+    /// Validates a `RawGd<T>` according to the type's invariants (depending on safeguard level).
+    ///
+    /// # Panics
+    /// If validation fails.
+    #[doc(hidden)]
+    #[inline]
+    pub fn validate<T: GodotClass>(raw_gd: &RawGd<T>) -> Self {
+        raw_gd.check_rtti("validated_object");
+
+        Self {
+            object_ptr: raw_gd.obj_sys(),
+        }
+    }
+
+    /// Extracts the object pointer from an `Option<ValidatedObject>`.
+    ///
+    /// Returns null pointer for `None` (static methods), or the validated pointer for `Some`.
+    #[inline]
+    pub fn object_ptr(opt: Option<&Self>) -> sys::GDExtensionObjectPtr {
+        opt.map(|v| v.object_ptr).unwrap_or(ptr::null_mut())
     }
 }
 

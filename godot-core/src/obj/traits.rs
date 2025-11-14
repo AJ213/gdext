@@ -11,7 +11,7 @@ use crate::builder::ClassBuilder;
 use crate::builtin::GString;
 use crate::init::InitLevel;
 use crate::meta::inspect::EnumConstant;
-use crate::meta::ClassName;
+use crate::meta::ClassId;
 use crate::obj::{bounds, Base, BaseMut, BaseRef, Bounds, Gd};
 use crate::registry::signal::SignalObject;
 use crate::storage::Storage;
@@ -34,10 +34,15 @@ where
     /// The immediate superclass of `T`. This is always a Godot engine class.
     type Base: GodotClass; // not EngineClass because it can be ()
 
-    /// The name of the class, under which it is registered in Godot.
+    /// Globally unique class ID, linked to the name under which the class is registered in Godot.
     ///
-    /// This may deviate from the Rust struct name: `HttpRequest::class_name().as_str() == "HTTPRequest"`.
-    fn class_name() -> ClassName;
+    /// The name may deviate from the Rust struct name: `HttpRequest::class_id().as_str() == "HTTPRequest"`.
+    fn class_id() -> ClassId;
+
+    #[deprecated = "Renamed to `class_id()`"]
+    fn class_name() -> ClassId {
+        Self::class_id()
+    }
 
     /// Initialization level, during which this class should be initialized with Godot.
     ///
@@ -45,18 +50,18 @@ where
     /// It must not be less than `Base::INIT_LEVEL`.
     const INIT_LEVEL: InitLevel = <Self::Base as GodotClass>::INIT_LEVEL;
 
-    /// Returns whether `Self` inherits from `U`.
+    /// Returns whether `Self` inherits from `Base`.
     ///
     /// This is reflexive, i.e `Self` inherits from itself.
     ///
     /// See also [`Inherits`] for a trait bound.
-    fn inherits<U: GodotClass>() -> bool {
-        if Self::class_name() == U::class_name() {
+    fn inherits<Base: GodotClass>() -> bool {
+        if Self::class_id() == Base::class_id() {
             true
-        } else if Self::Base::class_name() == <NoBase>::class_name() {
+        } else if Self::Base::class_id() == <NoBase>::class_id() {
             false
         } else {
-            Self::Base::inherits::<U>()
+            Self::Base::inherits::<Base>()
         }
     }
 }
@@ -71,8 +76,8 @@ pub enum NoBase {}
 impl GodotClass for NoBase {
     type Base = NoBase;
 
-    fn class_name() -> ClassName {
-        ClassName::none()
+    fn class_id() -> ClassId {
+        ClassId::none()
     }
 
     const INIT_LEVEL: InitLevel = InitLevel::Core; // arbitrary; never read.
@@ -134,10 +139,18 @@ unsafe impl Bounds for NoBase {
 /// This trait must only be implemented for subclasses of `Base`.
 ///
 /// Importantly, this means it is always safe to upcast a value of type `Gd<Self>` to `Gd<Base>`.
-pub unsafe trait Inherits<Base: GodotClass>: GodotClass {}
+pub unsafe trait Inherits<Base: GodotClass>: GodotClass {
+    /// True iff `Self == Base`.
+    ///
+    /// Exists because something like C++'s [`std::is_same`](https://en.cppreference.com/w/cpp/types/is_same.html) is notoriously difficult
+    /// in stable Rust, due to lack of specialization.
+    const IS_SAME_CLASS: bool = false;
+}
 
 // SAFETY: Every class is a subclass of itself.
-unsafe impl<T: GodotClass> Inherits<T> for T {}
+unsafe impl<T: GodotClass> Inherits<T> for T {
+    const IS_SAME_CLASS: bool = true;
+}
 
 /// Trait that defines a `T` -> `dyn Trait` relation for use in [`DynGd`][crate::obj::DynGd].
 ///
@@ -197,30 +210,6 @@ pub trait EngineEnum: Copy {
     ///
     /// If the value does not match one of the known enumerators, the empty string is returned.
     fn as_str(&self) -> &'static str;
-
-    /// The equivalent name of the enumerator, as specified in Godot.
-    ///
-    /// If the value does not match one of the known enumerators, the empty string is returned.
-    ///
-    /// # Deprecation
-    /// Design change is due to the fact that Godot enums may have multiple constants with the same ordinal value, and `godot_name()` cannot
-    /// always return a unique name for it. So there are cases where this method returns unexpected results.
-    ///
-    /// To keep the old -- possibly incorrect -- behavior, you can write the following function. However, it runs in linear rather than constant
-    /// time (which is often OK, given that there are very few constants per enum).
-    /// ```
-    /// use godot::obj::EngineEnum;
-    ///
-    /// fn godot_name<T: EngineEnum + Eq + PartialEq + 'static>(value: T) -> &'static str {
-    ///     T::all_constants()
-    ///         .iter()
-    ///         .find(|c| c.value() == value)
-    ///         .map(|c| c.godot_name())
-    ///         .unwrap_or("") // Previous behavior.
-    /// }
-    /// ```
-    #[deprecated = "Moved to introspection API, see `EngineEnum::all_constants()` and `EnumConstant::godot_name()`"]
-    fn godot_name(&self) -> &'static str;
 
     /// Returns a slice of distinct enum values.
     ///
@@ -527,6 +516,48 @@ pub trait WithBaseField: GodotClass + Bounds<Declarer = bounds::DeclUser> {
         // Narrows lifetime again from 'static to 'self.
         BaseMut::new(passive_gd, guard)
     }
+
+    /// Defers the given closure to run during [idle time](https://docs.godotengine.org/en/stable/classes/class_object.html#class-object-method-call-deferred).
+    ///
+    /// This is a type-safe alternative to [`Object::call_deferred()`][crate::classes::Object::call_deferred]. The closure receives
+    /// `&mut Self` allowing direct access to Rust fields and methods.
+    ///
+    /// See also [`Gd::run_deferred()`] to defer logic outside of `self`.
+    ///
+    /// # Panics
+    /// If called outside the main thread.
+    fn run_deferred<F>(&mut self, mut_self_method: F)
+    where
+        F: FnOnce(&mut Self) + 'static,
+    {
+        // We need to copy the Gd, because the lifetime of `&mut self` does not extend throughout the closure, which will only be called
+        // deferred. It might even be freed in-between, causing panic on bind_mut().
+        self.to_gd().run_deferred(mut_self_method)
+    }
+
+    /// Defers the given closure to run during [idle time](https://docs.godotengine.org/en/stable/classes/class_object.html#class-object-method-call-deferred).
+    ///
+    /// This is a type-safe alternative to [`Object::call_deferred()`][crate::classes::Object::call_deferred]. The closure receives
+    /// `Gd<Self>`, which can be used to call engine methods or [`bind()`][Gd::bind]/[`bind_mut()`][Gd::bind_mut] to access the Rust object.
+    ///
+    /// See also [`Gd::run_deferred_gd()`] to defer logic outside of `self`.
+    ///
+    /// # Panics
+    /// If called outside the main thread.
+    fn run_deferred_gd<F>(&mut self, gd_function: F)
+    where
+        F: FnOnce(Gd<Self>) + 'static,
+    {
+        self.to_gd().run_deferred_gd(gd_function)
+    }
+
+    #[deprecated = "Split into `run_deferred()` + `run_deferred_gd()`."]
+    fn apply_deferred<F>(&mut self, rust_function: F)
+    where
+        F: FnOnce(&mut Self) + 'static,
+    {
+        self.run_deferred(rust_function)
+    }
 }
 
 /// Implemented for all classes with registered signals, both engine- and user-declared.
@@ -637,6 +668,23 @@ pub trait NewAlloc: GodotClass {
     fn new_alloc() -> Gd<Self>;
 }
 
+/// Trait for singleton classes in Godot.
+///
+/// There is only one instance of each singleton class in the engine, accessible through [`singleton()`][Self::singleton].
+pub trait Singleton: GodotClass {
+    // Note: we cannot return &'static mut Self, as this would be very easy to mutably alias. Returning &'static Self is possible,  but we'd
+    // lose the whole mutability information (even if that is best-effort and not strict Rust mutability, it makes the API much more usable).
+    // As long as the user has multiple Gd smart pointers to the same singletons, only the internal raw pointers are aliased.
+    // See also Deref/DerefMut impl for Gd.
+
+    /// Returns the singleton instance.
+    ///
+    /// # Panics
+    /// If called during global init/deinit of godot-rust. Most singletons are only available after the first frame has run.
+    /// See also [`ExtensionLibrary`](../init/trait.ExtensionLibrary.html#availability-of-godot-apis-during-init-and-deinit).
+    fn singleton() -> Gd<Self>;
+}
+
 impl<T> NewAlloc for T
 where
     T: cap::GodotDefault + Bounds<Memory = bounds::MemManual>,
@@ -657,7 +705,6 @@ pub mod cap {
     use super::*;
     use crate::builtin::{StringName, Variant};
     use crate::meta::PropertyInfo;
-    use crate::obj::{Base, Bounds, Gd};
     use crate::storage::{IntoVirtualMethodReceiver, VirtualMethodReceiver};
 
     /// Trait for all classes that are default-constructible from the Godot engine.
@@ -693,7 +740,7 @@ pub mod cap {
             // 1. Separate trait `GodotUserDefault` for user classes, which then proliferates through all APIs and makes abstraction harder.
             // 2. Repeatedly implementing __godot_default() that forwards to something like Gd::default_user_instance(). Possible, but this
             //    will make the step toward builder APIs more difficult, as users would need to re-implement this as well.
-            debug_assert_eq!(
+            sys::strict_assert_eq!(
                 std::any::TypeId::of::<<Self as Bounds>::Declarer>(),
                 std::any::TypeId::of::<bounds::DeclUser>(),
                 "__godot_default() called on engine class; must be overridden for engine classes"

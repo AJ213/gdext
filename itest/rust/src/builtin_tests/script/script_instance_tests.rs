@@ -13,11 +13,11 @@ use godot::classes::{
     ScriptLanguageExtension,
 };
 use godot::global::{Error, MethodFlags};
-use godot::meta::{ClassName, FromGodot, MethodInfo, PropertyInfo, ToGodot};
+use godot::meta::error::CallErrorType;
+use godot::meta::{ClassId, FromGodot, MethodInfo, PropertyInfo, ToGodot};
 use godot::obj::script::{create_script_instance, ScriptInstance, SiMut};
 use godot::obj::{Base, Gd, NewAlloc, WithBaseField};
 use godot::register::{godot_api, GodotClass};
-use godot::sys;
 
 use crate::framework::itest;
 
@@ -107,7 +107,7 @@ impl TestScriptInstance {
             method_list: vec![MethodInfo {
                 id: 1,
                 method_name: StringName::from("script_method_a"),
-                class_name: ClassName::new_cached::<TestScript>(|| "TestScript".to_string()),
+                class_name: ClassId::new_cached::<TestScript>(|| "TestScript".to_string()),
                 return_type: PropertyInfo::new_var::<GString>(""),
                 arguments: vec![
                     PropertyInfo::new_var::<GString>("arg_a"),
@@ -166,7 +166,7 @@ impl ScriptInstance for TestScriptInstance {
         mut this: SiMut<Self>,
         method: StringName,
         args: &[&Variant],
-    ) -> Result<Variant, sys::GDExtensionCallErrorType> {
+    ) -> Result<Variant, CallErrorType> {
         match method.to_string().as_str() {
             "script_method_a" => {
                 let arg_a = args[0].to::<GString>();
@@ -190,7 +190,7 @@ impl ScriptInstance for TestScriptInstance {
 
             other => {
                 println!("CALL: {other} with args: {args:?}");
-                Err(sys::GDEXTENSION_CALL_ERROR_INVALID_METHOD)
+                Err(CallErrorType::InvalidMethod)
             }
         }
     }
@@ -342,12 +342,12 @@ fn script_instance_exists() {
     let script = TestScript::new(language.clone());
     let mut object = Object::new_alloc();
 
-    object.set_script(&script.to_variant());
+    object.set_script(&script);
 
     let instance_exists = godot::obj::script::script_instance_exists(&object, &script);
     assert!(instance_exists);
 
-    object.set_script(&Variant::nil());
+    object.set_script(Gd::null_arg());
 
     let instance_exists = godot::obj::script::script_instance_exists(&object, &script);
     assert!(!instance_exists);

@@ -9,9 +9,7 @@ use godot_ffi::VariantType;
 
 use crate::builtin::{GString, StringName};
 use crate::global::{PropertyHint, PropertyUsageFlags};
-use crate::meta::{
-    element_godot_type_name, ArrayElement, ClassName, GodotType, PackedArrayElement,
-};
+use crate::meta::{element_godot_type_name, ArrayElement, ClassId, GodotType, PackedArrayElement};
 use crate::obj::{bounds, Bounds, EngineBitfield, EngineEnum, GodotClass};
 use crate::registry::class::get_dyn_property_hint_string;
 use crate::registry::property::{Export, Var};
@@ -29,7 +27,7 @@ use crate::{classes, sys};
 // pub(crate) enum SimplePropertyType {
 //     Variant { ty: VariantType },
 //     Array { elem_ty: VariantType },
-//     Object { class_name: ClassName },
+//     Object { class_id: ClassId },
 // }
 pub struct PropertyInfo {
     /// Which type this property has.
@@ -41,9 +39,9 @@ pub struct PropertyInfo {
 
     /// Which class this property is.
     ///
-    /// This should be set to [`ClassName::none()`] unless the variant type is `Object`. You can use
-    /// [`GodotClass::class_name()`](crate::obj::GodotClass::class_name()) to get the right name to use here.
-    pub class_name: ClassName,
+    /// This should be set to [`ClassId::none()`] unless the variant type is `Object`. You can use
+    /// [`GodotClass::class_id()`](crate::obj::GodotClass::class_name()) to get the right name to use here.
+    pub class_id: ClassId,
 
     /// The name of this property in Godot.
     pub property_name: StringName,
@@ -115,7 +113,7 @@ impl PropertyInfo {
     pub fn new_group(group_name: &str, group_prefix: &str) -> Self {
         Self {
             variant_type: VariantType::NIL,
-            class_name: ClassName::none(),
+            class_id: ClassId::none(),
             property_name: group_name.into(),
             hint_info: PropertyHintInfo {
                 hint: PropertyHint::NONE,
@@ -132,7 +130,7 @@ impl PropertyInfo {
     pub fn new_subgroup(subgroup_name: &str, subgroup_prefix: &str) -> Self {
         Self {
             variant_type: VariantType::NIL,
-            class_name: ClassName::none(),
+            class_id: ClassId::none(),
             property_name: subgroup_name.into(),
             hint_info: PropertyHintInfo {
                 hint: PropertyHint::NONE,
@@ -151,7 +149,7 @@ impl PropertyInfo {
     {
         self.variant_type == VariantType::ARRAY
             && self.hint_info.hint == PropertyHint::ARRAY_TYPE
-            && self.hint_info.hint_string == T::Via::godot_type_name().into()
+            && self.hint_info.hint_string == GString::from(&T::Via::godot_type_name())
     }
 
     // ------------------------------------------------------------------------------------------------------------------------------------------
@@ -164,7 +162,7 @@ impl PropertyInfo {
         sys::GDExtensionPropertyInfo {
             type_: self.variant_type.sys(),
             name: sys::SysPtr::force_mut(self.property_name.string_sys()),
-            class_name: sys::SysPtr::force_mut(self.class_name.string_sys()),
+            class_name: sys::SysPtr::force_mut(self.class_id.string_sys()),
             hint: u32::try_from(self.hint_info.hint.ord()).expect("hint.ord()"),
             hint_string: sys::SysPtr::force_mut(self.hint_info.hint_string.string_sys()),
             usage: u32::try_from(self.usage.ord()).expect("usage.ord()"),
@@ -194,7 +192,7 @@ impl PropertyInfo {
         sys::GDExtensionPropertyInfo {
             type_: self.variant_type.sys(),
             name: self.property_name.into_owned_string_sys(),
-            class_name: sys::SysPtr::force_mut(self.class_name.string_sys()),
+            class_name: sys::SysPtr::force_mut(self.class_id.string_sys()),
             hint: u32::try_from(self.hint_info.hint.ord()).expect("hint.ord()"),
             hint_string: self.hint_info.hint_string.into_owned_string_sys(),
             usage: u32::try_from(self.usage.ord()).expect("usage.ord()"),
@@ -236,8 +234,8 @@ impl PropertyInfo {
         *StringName::borrow_string_sys_mut(ptr.name) = self.property_name;
         *GString::borrow_string_sys_mut(ptr.hint_string) = self.hint_info.hint_string;
 
-        if self.class_name != ClassName::none() {
-            *StringName::borrow_string_sys_mut(ptr.class_name) = self.class_name.to_string_name();
+        if self.class_id != ClassId::none() {
+            *StringName::borrow_string_sys_mut(ptr.class_name) = self.class_id.to_string_name();
         }
     }
 
@@ -253,7 +251,7 @@ impl PropertyInfo {
 
         Self {
             variant_type: VariantType::from_sys(ptr.type_),
-            class_name: ClassName::none(),
+            class_id: ClassId::none(),
             property_name: StringName::new_from_string_sys(ptr.name),
             hint_info: PropertyHintInfo {
                 hint: PropertyHint::from_ord(ptr.hint.to_owned() as i32),
@@ -291,7 +289,7 @@ impl PropertyHintInfo {
         let hint_string = if sys::GdextBuild::since_api("4.3") {
             GString::new()
         } else {
-            GString::from(type_name)
+            GString::from(&type_name)
         };
 
         Self {
@@ -304,7 +302,7 @@ impl PropertyHintInfo {
     pub fn var_array_element<T: ArrayElement>() -> Self {
         Self {
             hint: PropertyHint::ARRAY_TYPE,
-            hint_string: GString::from(element_godot_type_name::<T>()),
+            hint_string: GString::from(&element_godot_type_name::<T>()),
         }
     }
 
@@ -312,7 +310,7 @@ impl PropertyHintInfo {
     pub fn export_array_element<T: ArrayElement>() -> Self {
         Self {
             hint: PropertyHint::TYPE_STRING,
-            hint_string: GString::from(T::element_type_string()),
+            hint_string: GString::from(&T::element_type_string()),
         }
     }
 
@@ -320,7 +318,7 @@ impl PropertyHintInfo {
     pub fn export_packed_array_element<T: PackedArrayElement>() -> Self {
         Self {
             hint: PropertyHint::TYPE_STRING,
-            hint_string: GString::from(T::element_type_string()),
+            hint_string: GString::from(&T::element_type_string()),
         }
     }
 
@@ -338,7 +336,7 @@ impl PropertyHintInfo {
 
         // Godot does this by default too; the hint is needed when the class is a resource/node,
         // but doesn't seem to make a difference otherwise.
-        let hint_string = T::class_name().to_gstring();
+        let hint_string = T::class_id().to_gstring();
 
         Self { hint, hint_string }
     }
@@ -349,16 +347,16 @@ impl PropertyHintInfo {
         D: ?Sized + 'static,
     {
         PropertyHintInfo {
-            hint_string: GString::from(get_dyn_property_hint_string::<T, D>()),
+            hint_string: GString::from(&get_dyn_property_hint_string::<T, D>()),
             ..PropertyHintInfo::export_gd::<T>()
         }
     }
 
     #[doc(hidden)]
-    pub fn object_as_node_class<T>() -> Option<ClassName>
+    pub fn object_as_node_class<T>() -> Option<ClassId>
     where
         T: GodotClass + Bounds<Exportable = bounds::Yes>,
     {
-        T::inherits::<classes::Node>().then(|| T::class_name())
+        T::inherits::<classes::Node>().then(|| T::class_id())
     }
 }

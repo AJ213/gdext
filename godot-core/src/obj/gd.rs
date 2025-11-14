@@ -9,17 +9,18 @@ use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use std::ops::{Deref, DerefMut};
 
 use godot_ffi as sys;
+use godot_ffi::is_main_thread;
 use sys::{static_assert_eq_size_align, SysPtr as _};
 
 use crate::builtin::{Callable, GString, NodePath, StringName, Variant};
 use crate::meta::error::{ConvertError, FromFfiError};
 use crate::meta::{
-    ArrayElement, AsArg, CallContext, ClassName, CowArg, FromGodot, GodotConvert, GodotType,
-    PropertyHintInfo, RefArg, ToGodot,
+    ArrayElement, AsArg, ClassId, FromGodot, GodotConvert, GodotType, PropertyHintInfo, RefArg,
+    ToGodot,
 };
 use crate::obj::{
     bounds, cap, Bounds, DynGd, GdDerefTarget, GdMut, GdRef, GodotClass, Inherits, InstanceId,
-    OnEditor, RawGd, WithSignals,
+    OnEditor, RawGd, WithBaseField, WithSignals,
 };
 use crate::private::{callbacks, PanicPayload};
 use crate::registry::class::try_dynify_object;
@@ -234,7 +235,7 @@ impl<T: GodotClass> Gd<T> {
             panic!(
                 "Instance ID {} does not belong to a valid object of class '{}': {}",
                 instance_id,
-                T::class_name(),
+                T::class_id(),
                 err
             )
         })
@@ -294,7 +295,7 @@ impl<T: GodotClass> Gd<T> {
 
     /// Returns the dynamic class name of the object as `StringName`.
     ///
-    /// This method retrieves the class name of the object at runtime, which can be different from [`T::class_name()`][GodotClass::class_name]
+    /// This method retrieves the class name of the object at runtime, which can be different from [`T::class_id()`][GodotClass::class_name]
     /// if derived classes are involved.
     ///
     /// Unlike [`Object::get_class()`][crate::classes::Object::get_class], this returns `StringName` instead of `GString` and needs no
@@ -505,8 +506,8 @@ impl<T: GodotClass> Gd<T> {
         self.owned_cast().unwrap_or_else(|from_obj| {
             panic!(
                 "downcast from {from} to {to} failed; instance {from_obj:?}",
-                from = T::class_name(),
-                to = Derived::class_name(),
+                from = T::class_id(),
+                to = Derived::class_id(),
             )
         })
     }
@@ -582,10 +583,15 @@ impl<T: GodotClass> Gd<T> {
     /// `name` is used for the string representation of the closure, which helps with debugging.
     ///
     /// Such a callable will be automatically invalidated by Godot when a linked Object is freed.
-    /// If you need a Callable which can live indefinitely use [`Callable::from_local_fn()`].
-    pub fn linked_callable<F>(&self, method_name: impl AsArg<GString>, rust_function: F) -> Callable
+    /// If you need a Callable which can live indefinitely, use [`Callable::from_fn()`].
+    pub fn linked_callable<R, F>(
+        &self,
+        method_name: impl AsArg<GString>,
+        rust_function: F,
+    ) -> Callable
     where
-        F: 'static + FnMut(&[&Variant]) -> Result<Variant, ()>,
+        R: ToGodot,
+        F: 'static + FnMut(&[&Variant]) -> R,
     {
         Callable::from_linked_fn(method_name, self, rust_function)
     }
@@ -605,7 +611,7 @@ impl<T: GodotClass> Gd<T> {
     /// This is the default for most initializations from FFI. In cases where reference counter
     /// should explicitly **not** be updated, [`Self::from_obj_sys_weak`] is available.
     pub(crate) unsafe fn from_obj_sys(ptr: sys::GDExtensionObjectPtr) -> Self {
-        debug_assert!(
+        sys::strict_assert!(
             !ptr.is_null(),
             "Gd::from_obj_sys() called with null pointer"
         );
@@ -665,6 +671,63 @@ impl<T: GodotClass> Gd<T> {
         // Do not increment ref-count; assumed to be return value from FFI.
         sys::ptr_then(object_ptr, |ptr| Gd::from_obj_sys_weak(ptr))
     }
+
+    /// Defers the given closure to run during [idle time](https://docs.godotengine.org/en/stable/classes/class_object.html#class-object-method-call-deferred).
+    ///
+    /// This is a type-safe alternative to [`Object::call_deferred()`][crate::classes::Object::call_deferred]. The closure receives
+    /// `&mut Self` allowing direct access to Rust fields and methods.
+    ///
+    /// This method is only available for user-defined classes with a `Base<T>` field.
+    /// For engine classes, use [`run_deferred_gd()`][Self::run_deferred_gd] instead.
+    ///
+    /// See also [`WithBaseField::run_deferred()`] if you are within an `impl` block and have access to `self`.
+    ///
+    /// # Panics
+    /// If called outside the main thread.
+    pub fn run_deferred<F>(&mut self, mut_self_method: F)
+    where
+        T: WithBaseField,
+        F: FnOnce(&mut T) + 'static,
+    {
+        self.run_deferred_gd(move |mut gd| {
+            let mut guard = gd.bind_mut();
+            mut_self_method(&mut *guard);
+        });
+    }
+
+    /// Defers the given closure to run during [idle time](https://docs.godotengine.org/en/stable/classes/class_object.html#class-object-method-call-deferred).
+    ///
+    /// This is a type-safe alternative to [`Object::call_deferred()`][crate::classes::Object::call_deferred]. The closure receives
+    /// `Gd<T>`, which can be used to call engine methods or [`bind()`][Gd::bind]/[`bind_mut()`][Gd::bind_mut] to access the Rust object.
+    ///
+    /// See also [`WithBaseField::run_deferred_gd()`] if you are within an `impl` block and have access to `self`.
+    ///
+    /// # Panics
+    /// If called outside the main thread.
+    pub fn run_deferred_gd<F>(&mut self, gd_function: F)
+    where
+        F: FnOnce(Gd<T>) + 'static,
+    {
+        let obj = self.clone();
+        assert!(
+            is_main_thread(),
+            "`run_deferred` must be called on the main thread"
+        );
+
+        let callable = Callable::from_once_fn("run_deferred", move |_| {
+            gd_function(obj);
+        });
+        callable.call_deferred(&[]);
+    }
+
+    #[deprecated = "Split into `run_deferred()` + `run_deferred_gd()`."]
+    pub fn apply_deferred<F>(&mut self, rust_function: F)
+    where
+        T: WithBaseField,
+        F: FnOnce(&mut T) + 'static,
+    {
+        self.run_deferred(rust_function)
+    }
 }
 
 /// _The methods in this impl block are only available for objects `T` that are manually managed,
@@ -720,7 +783,7 @@ where
         }
 
         // If ref_counted returned None, that means the instance was destroyed
-        if ref_counted != Some(false) || !self.is_instance_valid() {
+        if ref_counted != Some(false) || (cfg!(safeguards_balanced) && !self.is_instance_valid()) {
             return error_or_panic("called free() on already destroyed object".to_string());
         }
 
@@ -728,8 +791,10 @@ where
         // static type information to be correct. This is a no-op in Release mode.
         // Skip check during panic unwind; would need to rewrite whole thing to use Result instead. Having BOTH panic-in-panic and bad type is
         // a very unlikely corner case.
+        #[cfg(safeguards_strict)]
         if !is_panic_unwind {
-            self.raw.check_dynamic_type(&CallContext::gd::<T>("free"));
+            self.raw
+                .check_dynamic_type(&crate::meta::CallContext::gd::<T>("free"));
         }
 
         // SAFETY: object must be alive, which was just checked above. No multithreading here.
@@ -748,8 +813,8 @@ where
             sys::interface_fn!(object_destroy)(self.raw.obj_sys());
         }
 
-        // TODO: this might leak associated data in Gd<T>, e.g. ClassName.
-        std::mem::forget(self);
+        // Deallocate associated data in Gd, without destroying the object pointer itself (already done above).
+        self.drop_weak()
     }
 }
 
@@ -816,22 +881,7 @@ where
     /// let mut shape: Gd<Node> = some_node();
     /// shape.set_owner(Gd::null_arg());
     pub fn null_arg() -> impl AsArg<Option<Gd<T>>> {
-        // Anonymous struct that creates None for optional object arguments.
-        struct NullGdArg<T>(std::marker::PhantomData<*mut T>);
-
-        impl<T> AsArg<Option<Gd<T>>> for NullGdArg<T>
-        where
-            T: GodotClass,
-        {
-            fn into_arg<'r>(self) -> CowArg<'r, Option<Gd<T>>>
-            where
-                Self: 'r,
-            {
-                CowArg::Owned(None)
-            }
-        }
-
-        NullGdArg(std::marker::PhantomData)
+        meta::NullArg(std::marker::PhantomData)
     }
 }
 
@@ -938,12 +988,12 @@ impl<T: GodotClass> GodotType for Gd<T> {
         }
     }
 
-    fn class_name() -> ClassName {
-        T::class_name()
+    fn class_id() -> ClassId {
+        T::class_id()
     }
 
     fn godot_type_name() -> String {
-        T::class_name().to_string()
+        T::class_id().to_string()
     }
 
     fn qualifies_as_special_none(from_variant: &Variant) -> bool {
@@ -961,7 +1011,7 @@ impl<T: GodotClass> GodotType for Gd<T> {
         false
     }
 
-    unsafe fn as_object_arg(&self) -> meta::ObjectArg {
+    fn as_object_arg(&self) -> meta::ObjectArg<'_> {
         meta::ObjectArg::from_gd(self)
     }
 }
@@ -969,7 +1019,7 @@ impl<T: GodotClass> GodotType for Gd<T> {
 impl<T: GodotClass> ArrayElement for Gd<T> {
     fn element_type_string() -> String {
         // See also impl Export for Gd<T>.
-        object_export_element_type_string::<T>(T::class_name())
+        object_export_element_type_string::<T>(T::class_id())
     }
 }
 
@@ -978,30 +1028,6 @@ impl<T: GodotClass> ArrayElement for Option<Gd<T>> {
         Gd::<T>::element_type_string()
     }
 }
-
-/*
-// TODO find a way to generalize AsArg to derived->base conversions without breaking type inference in array![].
-// Possibly we could use a "canonical type" with unambiguous mapping (&Gd<T> -> &Gd<T>, not &Gd<T> -> &Gd<TBase>).
-// See also regression test in array_test.rs.
-
-impl<'r, T, TBase> AsArg<Gd<TBase>> for &'r Gd<T>
-where
-    T: Inherits<TBase>,
-    TBase: GodotClass,
-{
-    #[doc(hidden)] // Repeated despite already hidden in trait; some IDEs suggest this otherwise.
-    fn into_arg<'cow>(self) -> CowArg<'cow, Gd<TBase>>
-    where
-        'r: 'cow, // Original reference must be valid for at least as long as the returned cow.
-    {
-        // Performance: clones unnecessarily, which has overhead for ref-counted objects.
-        // A result of being generic over base objects and allowing T: Inherits<Base> rather than just T == Base.
-        // Was previously `CowArg::Borrowed(self)`. Borrowed() can maybe be specialized for objects, or combined with AsObjectArg.
-
-        CowArg::Owned(self.clone().upcast::<TBase>())
-    }
-}
-*/
 
 impl<T> Default for Gd<T>
 where
@@ -1049,7 +1075,7 @@ where
     }
 
     #[doc(hidden)]
-    fn as_node_class() -> Option<ClassName> {
+    fn as_node_class() -> Option<ClassId> {
         PropertyHintInfo::object_as_node_class::<T>()
     }
 }
@@ -1092,7 +1118,7 @@ where
     }
 
     #[doc(hidden)]
-    fn as_node_class() -> Option<ClassName> {
+    fn as_node_class() -> Option<ClassId> {
         PropertyHintInfo::object_as_node_class::<T>()
     }
 }

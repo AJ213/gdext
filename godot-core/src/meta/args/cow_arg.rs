@@ -12,15 +12,23 @@ use godot_ffi::{ExtVariantType, GodotFfi, GodotNullableFfi, PtrcallType};
 
 use crate::builtin::Variant;
 use crate::meta::error::ConvertError;
-use crate::meta::{FromGodot, GodotConvert, GodotFfiVariant, RefArg, ToGodot};
+use crate::meta::{GodotConvert, GodotFfiVariant, ObjectArg, RefArg, ToGodot};
 use crate::sys;
+
+/// FFI-optimized argument. Like `CowArg`, but with additional "short-circuit" path to pass objects to FFI.
+#[doc(hidden)]
+#[derive(PartialEq)]
+pub enum FfiArg<'arg, T> {
+    Cow(CowArg<'arg, T>),
+    FfiObject(ObjectArg<'arg>),
+}
 
 /// Owned or borrowed value, used when passing arguments through `impl AsArg` to Godot APIs.
 #[doc(hidden)]
 #[derive(PartialEq)]
-pub enum CowArg<'r, T> {
+pub enum CowArg<'arg, T> {
     Owned(T),
-    Borrowed(&'r T),
+    Borrowed(&'arg T),
 }
 
 impl<T> CowArg<'_, T> {
@@ -88,16 +96,6 @@ where
     }
 }
 
-// TODO refactor signature tuples into separate in+out traits, so FromGodot is no longer needed.
-impl<T> FromGodot for CowArg<'_, T>
-where
-    T: FromGodot,
-{
-    fn try_from_godot(_via: Self::Via) -> Result<Self, ConvertError> {
-        wrong_direction!(try_from_godot)
-    }
-}
-
 impl<T> fmt::Debug for CowArg<'_, T>
 where
     T: fmt::Debug,
@@ -107,62 +105,6 @@ where
             CowArg::Owned(v) => write!(f, "CowArg::Owned({v:?})"),
             CowArg::Borrowed(r) => write!(f, "CowArg::Borrowed({r:?})"),
         }
-    }
-}
-
-// SAFETY: delegated to T.
-unsafe impl<T> GodotFfi for CowArg<'_, T>
-where
-    T: GodotFfi,
-{
-    const VARIANT_TYPE: ExtVariantType = T::VARIANT_TYPE;
-
-    unsafe fn new_from_sys(_ptr: sys::GDExtensionConstTypePtr) -> Self {
-        wrong_direction!(new_from_sys)
-    }
-
-    unsafe fn new_with_uninit(_init_fn: impl FnOnce(sys::GDExtensionUninitializedTypePtr)) -> Self {
-        wrong_direction!(new_with_uninit)
-    }
-
-    unsafe fn new_with_init(_init_fn: impl FnOnce(sys::GDExtensionTypePtr)) -> Self {
-        wrong_direction!(new_with_init)
-    }
-
-    fn sys(&self) -> sys::GDExtensionConstTypePtr {
-        self.cow_as_ref().sys()
-    }
-
-    fn sys_mut(&mut self) -> sys::GDExtensionTypePtr {
-        unreachable!("CowArg::sys_mut() currently not used by FFI marshalling layer, but only by specific functions");
-    }
-
-    // This function must be overridden; the default delegating to sys() is wrong for e.g. RawGd<T>.
-    // See also other manual overrides of as_arg_ptr().
-    fn as_arg_ptr(&self) -> sys::GDExtensionConstTypePtr {
-        self.cow_as_ref().as_arg_ptr()
-    }
-
-    unsafe fn from_arg_ptr(_ptr: sys::GDExtensionTypePtr, _call_type: PtrcallType) -> Self {
-        wrong_direction!(from_arg_ptr)
-    }
-
-    unsafe fn move_return_ptr(self, _dst: sys::GDExtensionTypePtr, _call_type: PtrcallType) {
-        // This one is implemented, because it's used for return types implementing ToGodot.
-        unreachable!("Calling CowArg::move_return_ptr is a mistake, as CowArg is intended only for arguments. Use the underlying value type.");
-    }
-}
-
-impl<T> GodotFfiVariant for CowArg<'_, T>
-where
-    T: GodotFfiVariant,
-{
-    fn ffi_to_variant(&self) -> Variant {
-        self.cow_as_ref().ffi_to_variant()
-    }
-
-    fn ffi_from_variant(_variant: &Variant) -> Result<Self, ConvertError> {
-        wrong_direction!(ffi_from_variant)
     }
 }
 
@@ -187,5 +129,108 @@ impl<T> Deref for CowArg<'_, T> {
             CowArg::Owned(value) => value,
             CowArg::Borrowed(value) => value,
         }
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+// FfiArg implementations
+
+impl<T> GodotNullableFfi for FfiArg<'_, T>
+where
+    T: GodotNullableFfi,
+{
+    fn null() -> Self {
+        FfiArg::Cow(CowArg::Owned(T::null()))
+    }
+
+    fn is_null(&self) -> bool {
+        match self {
+            FfiArg::Cow(cow_arg) => cow_arg.is_null(),
+            FfiArg::FfiObject(obj_arg) => obj_arg.is_null(),
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+
+/// Macro to implement similar trait impls between [`CowArg`] and [`FfiArg`].
+///
+/// Debug and null constructors are implemented manually since they're distinct enough.
+macro_rules! impl_ffi_traits {
+    ($ArgType:ident {
+        $($enum_pattern:pat => $delegate:expr),* $(,)?
+    }) => {
+        // SAFETY: delegated to inner values.
+        unsafe impl<T> GodotFfi for $ArgType<'_, T>
+        where
+            T: GodotFfi,
+        {
+            const VARIANT_TYPE: ExtVariantType = T::VARIANT_TYPE;
+
+            unsafe fn new_from_sys(_ptr: sys::GDExtensionConstTypePtr) -> Self {
+                wrong_direction!(new_from_sys)
+            }
+
+            unsafe fn new_with_uninit(_init_fn: impl FnOnce(sys::GDExtensionUninitializedTypePtr)) -> Self {
+                wrong_direction!(new_with_uninit)
+            }
+
+            unsafe fn new_with_init(_init_fn: impl FnOnce(sys::GDExtensionTypePtr)) -> Self {
+                wrong_direction!(new_with_init)
+            }
+
+            fn sys(&self) -> sys::GDExtensionConstTypePtr {
+                match self {
+                    $($enum_pattern => $delegate.sys(),)*
+                }
+            }
+
+            fn sys_mut(&mut self) -> sys::GDExtensionTypePtr {
+                unreachable!(concat!(stringify!($ArgType), "::sys_mut() currently not used by FFI marshalling layer, but only by specific functions"));
+            }
+
+            fn as_arg_ptr(&self) -> sys::GDExtensionConstTypePtr {
+                match self {
+                    $($enum_pattern => $delegate.as_arg_ptr(),)*
+                }
+            }
+
+            unsafe fn from_arg_ptr(_ptr: sys::GDExtensionTypePtr, _call_type: PtrcallType) -> Self {
+                wrong_direction!(from_arg_ptr)
+            }
+
+            unsafe fn move_return_ptr(self, _dst: sys::GDExtensionTypePtr, _call_type: PtrcallType) {
+                unreachable!(concat!("Calling ", stringify!($ArgType), "::move_return_ptr is a mistake, as ", stringify!($ArgType), " is intended only for arguments. Use the underlying value type."));
+            }
+        }
+
+        impl<T> GodotFfiVariant for $ArgType<'_, T>
+        where
+            T: GodotFfiVariant,
+        {
+            fn ffi_to_variant(&self) -> Variant {
+                match self {
+                    $($enum_pattern => $delegate.ffi_to_variant(),)*
+                }
+            }
+
+            fn ffi_from_variant(_variant: &Variant) -> Result<Self, ConvertError> {
+                wrong_direction!(ffi_from_variant)
+            }
+        }
+    };
+}
+
+impl_ffi_traits! {
+    CowArg {
+        CowArg::Owned(v) => v,
+        CowArg::Borrowed(r) => *r,
+    }
+}
+
+impl_ffi_traits! {
+    FfiArg {
+        FfiArg::Cow(cow_arg) => cow_arg,
+        FfiArg::FfiObject(obj_arg) => obj_arg,
     }
 }

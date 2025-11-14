@@ -27,10 +27,14 @@
 
 #![allow(clippy::match_like_matches_macro)] // if there is only one rule
 
+use std::borrow::Cow;
+
 use proc_macro2::Ident;
 
 use crate::conv::to_enum_type_uncached;
-use crate::models::domain::{ClassCodegenLevel, Enum, RustTy, TyName, VirtualMethodPresence};
+use crate::models::domain::{
+    ClassCodegenLevel, Enum, EnumReplacements, FnReturn, RustTy, TyName, VirtualMethodPresence,
+};
 use crate::models::json::{JsonBuiltinMethod, JsonClassMethod, JsonSignal, JsonUtilityFunction};
 use crate::special_cases::codegen_special_cases;
 use crate::util::option_as_slice;
@@ -93,6 +97,23 @@ pub fn is_native_struct_excluded(ty: &str) -> bool {
     codegen_special_cases::is_native_struct_excluded(ty)
 }
 
+/// Overrides the definition string for native structures, if they have incorrect definitions in the JSON.
+#[rustfmt::skip]
+pub fn get_native_struct_definition(struct_name: &str) -> Option<&'static str> {
+    match struct_name {
+        // Glyph struct definition was corrected in Godot 4.6 to include missing `span_index` field.
+        // See https://github.com/godotengine/godot/pull/108369.
+        // #[cfg(before_api = "4.6")] // TODO(v0.5): enable this once upstream PR is merged.
+        "Glyph" => Some(
+            "int start = -1;int end = -1;uint8_t count = 0;uint8_t repeat = 1;uint16_t flags = 0;float x_off = 0.f;float y_off = 0.f;\
+            float advance = 0.f;RID font_rid;int font_size = 0;int32_t index = 0;int span_index = -1"
+        ),
+
+        _ => None,
+    }
+}
+
+#[rustfmt::skip]
 pub fn is_godot_type_deleted(godot_ty: &str) -> bool {
     // Note: parameter can be a class or builtin name, but also something like "enum::AESContext.Mode".
 
@@ -113,15 +134,20 @@ pub fn is_godot_type_deleted(godot_ty: &str) -> bool {
         }
     }
 
+    // cfg!(target_os = "...") are relatively new and need more testing. If causing problems, revert to `true` (deleted) for now.
+    // TODO(v0.5): for doc generation, consider moving the target-filters to the generated code, so that API docs still show the classes.
     match godot_ty {
-        // Hardcoded cases that are not accessible.
         // Only on Android.
-        | "JavaClassWrapper"
-        | "JNISingleton"
         | "JavaClass"
+        | "JavaClassWrapper"
+        | "JavaObject"
+        | "JNISingleton"
+        => !cfg!(target_os = "android"),
+
         // Only on Wasm.
         | "JavaScriptBridge"
         | "JavaScriptObject"
+        => !cfg!(target_os = "emscripten"),
 
         // Thread APIs.
         | "Thread"
@@ -372,6 +398,10 @@ pub fn is_named_accessor_in_table(class_or_builtin_ty: &TyName, godot_method_nam
 /// to make them public, see [`is_builtin_method_exposed`].
 #[rustfmt::skip]
 pub fn is_method_private(class_or_builtin_ty: &TyName, godot_method_name: &str) -> bool {
+    if is_class_method_replaced_with_type_safe(class_or_builtin_ty, godot_method_name) {
+        return true;
+    }
+
     match (class_or_builtin_ty.godot_ty.as_str(), godot_method_name) {
         // Already covered by manual APIs
         | ("Object", "to_string")
@@ -381,6 +411,90 @@ pub fn is_method_private(class_or_builtin_ty: &TyName, godot_method_name: &str) 
         | ("Object", "notification")
 
         => true, _ => false
+    }
+}
+
+/// Lists methods that are replaced with manual, more type-safe equivalents. See `type_safe_replacements.rs`.
+/// 
+/// See also [`get_class_method_enum_param_replacement()`] for a more automated approach specifically for enum parameters.
+#[rustfmt::skip]
+pub fn is_class_method_replaced_with_type_safe(class_ty: &TyName, godot_method_name: &str) -> bool {
+
+    match (class_ty.godot_ty.as_str(), godot_method_name) {
+        // Variant -> Option<Gd<Script>>
+        | ("Object", "get_script")
+        | ("Object", "set_script")
+
+        // u32 -> ConnectFlags
+        | ("Object", "connect")
+
+        // i32 -> CallGroupFlags
+        // Some of those (not the notifications) could be handled by automated enum replacement, but keeping them together is simpler.
+        | ("SceneTree", "call_group_flags")
+        | ("SceneTree", "notify_group")
+        | ("SceneTree", "notify_group_flags")
+        | ("SceneTree", "set_group_flags")
+
+        => true, _ => false
+    }
+}
+
+/// For a given class method, returns all integer parameters and return types that have a type-safe enum/bitfield replacement.
+///
+/// Returns a list of tuples `(param_name, enum_type, is_bitfield)`, for example `[("mode_flags", "FileAccess.ModeFlags", true)]`.
+/// Use empty string `""` as `param_name` to denote return type replacements, for example `[("", "Tree.DropModeFlags", true)]`.
+///
+/// The caller should verify that the parameters exist and are in fact of integer type.
+/// Type-unsafety like this is quite common in Godot and can be easily patched at the codegen level.
+/// See also [`is_class_method_replaced_with_type_safe()`] for hand-picked overrides.
+// #[rustfmt::skip]
+pub fn get_class_method_param_enum_replacement(
+    class_ty: &TyName,
+    godot_method_name: &str,
+) -> EnumReplacements {
+    let godot_class_name = class_ty.godot_ty.as_str();
+
+    // Notes on replacement mechanism:
+    // 1. Design is deliberately (class, method) => [(param, enum)] instead of (class, method, param) => enum,
+    //    because this will catch typos/renames in parameter names -- the call site can verify parameter existence.
+    // 2. Bitfield is explicitly specified because Godot's API JSON also contains "enum::" or "bitfield::" prefixes as part of the type,
+    //    and it would be annoying to resolve that information at the stage of domain mapping (depends on mapping of all enums).
+    // 3. Empty string "" refers to the return type.
+    // 4. Several "mask" type properties are not bitfields but indeed numeric (e.g. collision masks, light masks, ...).
+
+    // IMPORTANT: double-check that enum/bitfield classification is correct, or override it with is_enum_bitfield() below.
+    // Lots of Godot `is_bitfield` values are wrong.
+
+    match (godot_class_name, godot_method_name) {
+        ("CharFXTransform", "get_glyph_flags") => &[("", "TextServer.GraphemeFlag", true)],
+        ("CharFXTransform", "set_glyph_flags") => {
+            &[("glyph_flags", "TextServer.GraphemeFlag", true)]
+        }
+        ("CodeEdit", "add_code_completion_option") => {
+            &[("location", "CodeEdit.CodeCompletionLocation", false)]
+        }
+        ("FileAccess", "create_temp") => &[("mode_flags", "FileAccess.ModeFlags", true)],
+        ("GPUParticles2D", "emit_particle") => &[("flags", "GPUParticles2D.EmitFlags", true)],
+        ("GPUParticles3D", "emit_particle") => &[("flags", "GPUParticles3D.EmitFlags", true)],
+        ("Node", "duplicate") => &[("flags", "Node.DuplicateFlags", true)],
+        ("ProgressBar", "get_fill_mode") => &[("", "ProgressBar.FillMode", false)],
+        ("ProgressBar", "set_fill_mode") => &[("mode", "ProgressBar.FillMode", false)],
+        ("TextEdit", "search") => &[("flags", "TextEdit.SearchFlags", true)],
+        ("TextEdit", "set_search_flags") => &[("flags", "TextEdit.SearchFlags", true)],
+        ("TextureProgressBar", "get_fill_mode") => &[("", "TextureProgressBar.FillMode", false)],
+        ("TextureProgressBar", "set_fill_mode") => {
+            &[("mode", "TextureProgressBar.FillMode", false)]
+        }
+        ("Tree", "get_drop_mode_flags") => &[("", "Tree.DropModeFlags", true)],
+        ("Tree", "set_drop_mode_flags") => &[("flags", "Tree.DropModeFlags", true)],
+
+        // TODO(v0.5):
+        // ("FBXDocument" | "GLTFDocument" | , "append_from_buffer" | "append_from_file" | "append_from_scene") => {
+        //    Maps to a "quasy-bitfield": EditorSceneFormatImporter has constants such as IMPORT_USE_NAMED_SKIN_BEADS, but not an actual enum.
+        //    See https://godot-rust.github.io/docs/gdext/master/godot/classes/struct.EditorSceneFormatImporter.html.
+        //    Note that FBXDocument inherits GLTFDocument, but the methods are exposed twice.
+        // }
+        _ => &[],
     }
 }
 
@@ -644,6 +758,10 @@ pub fn is_class_method_param_required(
     godot_method_name: &str,
     param: &Ident, // Don't use `&str` to avoid to_string() allocations for each check on call-site.
 ) -> bool {
+    // TODO(v0.5): this overlaps now slightly with Godot's own "required" meta in extension_api.json.
+    // Having an override list can always be useful, but possibly the two inputs (here + JSON) should be evaluated at the same time,
+    // during JSON->Domain mapping.
+
     // Note: magically, it's enough if a base class method is declared here; it will be picked up by derived classes.
 
     match (class_name.godot_ty.as_str(), godot_method_name) {
@@ -678,6 +796,27 @@ pub fn is_class_method_param_required(
 /// True if builtin method is excluded. Does NOT check for type exclusion; use [`is_builtin_type_deleted`] for that.
 pub fn is_builtin_method_deleted(_class_name: &TyName, method: &JsonBuiltinMethod) -> bool {
     codegen_special_cases::is_builtin_method_excluded(method)
+}
+
+/// Returns some generic type – such as `GenericArray` representing `Array<T>` – if method is marked as generic, `None` otherwise.
+///
+/// Usually required to initialize the return value and cache its type (see also https://github.com/godot-rust/gdext/pull/1357).
+#[rustfmt::skip]
+pub fn builtin_method_generic_ret(
+    class_name: &TyName,
+    method: &JsonBuiltinMethod,
+) -> Option<FnReturn> {
+    match (
+        class_name.rust_ty.to_string().as_str(),
+        method.name.as_str(),
+    ) {
+        | ("Array", "duplicate")
+        | ("Array", "slice")
+        | ("Array", "filter")
+
+        => Some(FnReturn::with_generic_builtin(RustTy::GenericArray)),
+        _ => None,
+    }
 }
 
 /// True if signal is absent from codegen (only when surrounding class is excluded).
@@ -722,15 +861,25 @@ pub fn is_utility_function_private(function: &JsonUtilityFunction) -> bool {
     }
 }
 
-pub fn maybe_rename_class_method<'m>(class_name: &TyName, godot_method_name: &'m str) -> &'m str {
+pub fn maybe_rename_class_method<'m>(
+    class_name: &TyName,
+    godot_method_name: &'m str,
+) -> Cow<'m, str> {
     // This is for non-virtual methods only. For virtual methods, use other handler below.
 
-    match (class_name.godot_ty.as_str(), godot_method_name) {
+    if is_class_method_replaced_with_type_safe(class_name, godot_method_name) {
+        let new_name = format!("raw_{godot_method_name}");
+        return Cow::Owned(new_name);
+    }
+
+    let hardcoded = match (class_name.godot_ty.as_str(), godot_method_name) {
         // GDScript class, possibly more in the future.
         (_, "new") => "instantiate",
 
         _ => godot_method_name,
-    }
+    };
+
+    Cow::Borrowed(hardcoded)
 }
 
 // Maybe merge with above?
@@ -1116,7 +1265,13 @@ pub fn is_enum_exhaustive(class_name: Option<&TyName>, enum_name: &str) -> bool 
 pub fn is_enum_bitfield(class_name: Option<&TyName>, enum_name: &str) -> Option<bool> {
     let class_name = class_name.map(|c| c.godot_ty.as_str());
     match (class_name, enum_name) {
+        | (Some("FileAccess"), "ModeFlags")
+        | (Some("GPUParticles2D"), "EmitFlags")
+        | (Some("GPUParticles3D"), "EmitFlags")
+        | (Some("Node"), "DuplicateFlags")
         | (Some("Object"), "ConnectFlags")
+        | (Some("SceneTree"), "GroupCallFlags")
+        | (Some("TextEdit"), "SearchFlags")
 
         => Some(true),
         _ => None

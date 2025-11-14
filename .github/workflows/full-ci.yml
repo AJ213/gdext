@@ -26,8 +26,8 @@ env:
   # * report_objects: list individual leaked objects when running LeakSanitizer
   LSAN_OPTIONS: report_objects=1
 
-  CARGO_DENY_VERSION: "0.16.1"
-  CARGO_MACHETE_VERSION: "0.7.0"
+  CARGO_DENY_VERSION: "0.18.5"
+  CARGO_MACHETE_VERSION: "0.9.1"
 
 
 defaults:
@@ -243,24 +243,6 @@ jobs:
         include:
           # macOS -- for the unintuitive naming, see https://github.com/actions/runner-images?tab=readme-ov-file#available-images
 
-          - name: macos-x86
-            os: macos-13
-            artifact-name: macos-x86-nightly
-            godot-binary: godot.macos.editor.dev.x86_64
-            hot-reload: stable
-
-          - name: macos-double-x86
-            os: macos-13
-            artifact-name: macos-double-x86-nightly
-            godot-binary: godot.macos.editor.dev.double.x86_64
-            rust-extra-args: --features godot/api-custom,godot/double-precision
-
-          - name: macos-x86-4.3
-            os: macos-13
-            artifact-name: macos-x86-4.3
-            godot-binary: godot.macos.editor.dev.x86_64
-            godot-prebuilt-patch: '4.3'
-
           - name: macos-arm
             os: macos-latest
             artifact-name: macos-arm-nightly
@@ -274,11 +256,11 @@ jobs:
 #            godot-binary: godot.macos.editor.dev.double.arm64
 #            rust-extra-args: --features godot/api-custom,godot/double-precision
 
-          - name: macos-arm-4.3
+          - name: macos-arm-4.4
             os: macos-latest
-            artifact-name: macos-arm-4.3
+            artifact-name: macos-arm-4.4
             godot-binary: godot.macos.editor.dev.arm64
-            godot-prebuilt-patch: '4.3'
+            godot-prebuilt-patch: '4.4'
 
           # Windows
 
@@ -294,11 +276,11 @@ jobs:
             godot-binary: godot.windows.editor.dev.double.x86_64.exe
             rust-extra-args: --features godot/api-custom,godot/double-precision
 
-          - name: windows-4.3
+          - name: windows-4.4
             os: windows-latest
-            artifact-name: windows-4.3
+            artifact-name: windows-4.4
             godot-binary: godot.windows.editor.dev.x86_64.exe
-            godot-prebuilt-patch: '4.3'
+            godot-prebuilt-patch: '4.4'
 
           # Linux
 
@@ -349,18 +331,26 @@ jobs:
           # Linux compat:
           # No hot-reload before 4.4, as the Godot project is 4.4+.
 
+          - name: linux-4.5
+            os: ubuntu-22.04
+            artifact-name: linux-4.5
+            godot-binary: godot.linuxbsd.editor.dev.x86_64
+            #godot-prebuilt-patch: '4.5'
+            hot-reload: stable
+
           - name: linux-4.4
             os: ubuntu-22.04
             artifact-name: linux-4.4
             godot-binary: godot.linuxbsd.editor.dev.x86_64
             godot-prebuilt-patch: '4.4'
-            hot-reload: stable
+            hot-reload: api-4-4
 
           - name: linux-4.3
             os: ubuntu-22.04
             artifact-name: linux-4.3
             godot-binary: godot.linuxbsd.editor.dev.x86_64
             godot-prebuilt-patch: '4.3'
+            hot-reload: api-4-3
 
           # Can be disabled in the future (already covered by memcheck). For now kept on to differentiate quicker.
           - name: linux-4.2
@@ -368,15 +358,16 @@ jobs:
             artifact-name: linux-4.2
             godot-binary: godot.linuxbsd.editor.dev.x86_64
             godot-prebuilt-patch: '4.2.2'
+            hot-reload: api-4-2
 
-          # Memory checks: special Godot binaries compiled with AddressSanitizer/LeakSanitizer to detect UB/leaks.
+          # Memory checks: special Godot binaries compiled with AddressSanitizer/LeakSanitizer to detect UB/leaks. Always Linux.
           # See also https://rustc-dev-guide.rust-lang.org/sanitizers.html.
           #
           # Additionally, the Godot source is patched to make dlclose() a no-op, as unloading dynamic libraries loses stacktrace and
           # cause false positives like println!. See https://github.com/google/sanitizers/issues/89.
           #
           # There is also a gcc variant besides clang, which is currently not used.
-          - name: linux-memcheck-nightly
+          - name: memcheck-nightly
             os: ubuntu-22.04
             artifact-name: linux-memcheck-nightly
             godot-binary: godot.linuxbsd.editor.dev.x86_64.llvm.san
@@ -386,7 +377,28 @@ jobs:
             # Sanitizers can't build proc-macros and build scripts; with --target, cargo ignores RUSTFLAGS for those two.
             rust-target: x86_64-unknown-linux-gnu
 
-          - name: linux-memcheck-4.2
+          - name: memcheck-release-disengaged
+            os: ubuntu-22.04
+            artifact-name: linux-memcheck-nightly
+            godot-binary: godot.linuxbsd.editor.dev.x86_64.llvm.san
+            rust-toolchain: nightly
+            rust-env-rustflags: -Zrandomize-layout -Zsanitizer=address
+            # Currently without itest/codegen-full-experimental.
+            rust-extra-args: --release --features godot/safeguards-release-disengaged
+            rust-target: x86_64-unknown-linux-gnu
+            rust-target-dir: release # We're running Godot debug build with Rust release dylib.
+
+          - name: memcheck-dev-balanced
+            os: ubuntu-22.04
+            artifact-name: linux-memcheck-nightly
+            godot-binary: godot.linuxbsd.editor.dev.x86_64.llvm.san
+            rust-toolchain: nightly
+            rust-env-rustflags: -Zrandomize-layout -Zsanitizer=address
+            # Currently without itest/codegen-full-experimental.
+            rust-extra-args: --features godot/safeguards-dev-balanced
+            rust-target: x86_64-unknown-linux-gnu
+
+          - name: memcheck-4.2
             os: ubuntu-22.04
             artifact-name: linux-memcheck-4.2
             godot-binary: godot.linuxbsd.editor.dev.x86_64.llvm.san
@@ -410,6 +422,7 @@ jobs:
           rust-toolchain: ${{ matrix.rust-toolchain || 'stable' }}
           rust-env-rustflags: ${{ matrix.rust-env-rustflags }}
           rust-target: ${{ matrix.rust-target }}
+          rust-target-dir: ${{ matrix.rust-target-dir }}
           rust-cache-key: ${{ matrix.rust-cache-key }}
           with-llvm: ${{ contains(matrix.name, 'macos') && contains(matrix.rust-extra-args, 'api-custom') }}
           godot-check-header: ${{ matrix.godot-check-header }}
@@ -491,7 +504,7 @@ jobs:
       - name: "Determine success or failure"
         run: |
           DEPENDENCIES='${{ toJson(needs) }}'
-          
+
           echo "Dependency jobs:"
           all_success=true
           for job in $(echo "$DEPENDENCIES" | jq -r 'keys[]'); do
@@ -501,7 +514,7 @@ jobs:
                   all_success=false
               fi
           done
-          
+
           if [[ "$all_success" == "false" ]]; then
               echo "One or more dependency jobs failed or were cancelled."
               exit 1

@@ -28,8 +28,11 @@ use crate::builtin::{real, Plane, Vector3, Vector3Axis};
 /// [`Rect2`]: crate::builtin::Rect2
 /// [`Rect2i`]: crate::builtin::Rect2i
 ///
-/// # Godot docs
+/// # Soft invariants
+/// `Aabb` requires non-negative size for certain operations, which is validated only on a best-effort basis. Violations may
+/// cause panics in Debug mode. See also [_Builtin API design_](../__docs/index.html#6-public-fields-and-soft-invariants).
 ///
+/// # Godot docs
 /// [`AABB`](https://docs.godotengine.org/en/stable/classes/class_aabb.html)
 #[derive(Default, Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -364,7 +367,7 @@ impl Aabb {
     // Credits: https://tavianator.com/2011/ray_box.html
     fn compute_ray_tnear_tfar(self, ray_from: Vector3, ray_dir: Vector3) -> (real, real) {
         self.assert_nonnegative();
-        debug_assert!(
+        sys::balanced_assert!(
             ray_dir != Vector3::ZERO,
             "ray direction must not be zero; use contains_point() for point checks"
         );
@@ -422,8 +425,7 @@ impl Aabb {
     ///
     /// Most functions will fail to give a correct result if the size is negative.
     #[inline]
-    /// TODO(v0.3): make private, change to debug_assert().
-    pub fn assert_nonnegative(self) {
+    fn assert_nonnegative(self) {
         assert!(
             self.size.x >= 0.0 && self.size.y >= 0.0 && self.size.z >= 0.0,
             "size {:?} is negative",
@@ -762,9 +764,8 @@ mod test {
         );
     }
 
-    #[test]
-    #[should_panic]
-    #[cfg(debug_assertions)]
+    #[test] // cfg_attr: no panic in disengaged level (although current CI doesn't run unit-tests).
+    #[cfg_attr(safeguards_balanced, should_panic)]
     fn test_intersect_ray_zero_dir_inside() {
         let aabb = Aabb {
             position: Vector3::new(-1.5, 2.0, -2.5),
@@ -775,8 +776,7 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
-    #[cfg(debug_assertions)]
+    #[cfg_attr(safeguards_balanced, should_panic)]
     fn test_intersect_ray_zero_dir_outside() {
         let aabb = Aabb {
             position: Vector3::new(-1.5, 2.0, -2.5),

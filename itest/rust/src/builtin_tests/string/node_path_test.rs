@@ -8,8 +8,9 @@
 use std::collections::HashSet;
 
 use godot::builtin::{GString, NodePath};
+use godot::meta::wrapped;
 
-use crate::framework::{expect_debug_panic_or_release_ok, itest};
+use crate::framework::{expect_panic_or_nothing, itest};
 
 #[itest]
 fn node_path_default() {
@@ -24,11 +25,6 @@ fn node_path_conversion() {
     let string = GString::from("some string");
     let name = NodePath::from(&string);
     let back = GString::from(&name);
-
-    assert_eq!(string, back);
-
-    let second = NodePath::from(string.clone());
-    let back = GString::from(second);
 
     assert_eq!(string, back);
 }
@@ -88,22 +84,26 @@ fn node_path_with_null() {
 
 #[itest]
 #[cfg(since_api = "4.3")]
+#[allow(clippy::reversed_empty_ranges)]
 fn node_path_subpath() {
     let path = NodePath::from("path/to/Node:with:props");
     let parts = path.get_name_count() + path.get_subname_count();
 
-    assert_eq!(path.subpath(0, 1), "path".into());
-    assert_eq!(path.subpath(1, 2), "to".into());
-    assert_eq!(path.subpath(2, 3), "Node".into());
-    assert_eq!(path.subpath(3, 4), ":with".into());
-    assert_eq!(path.subpath(4, 5), ":props".into());
+    assert_eq!(path.subpath(0..1), "path".into());
+    assert_eq!(path.subpath(1..2), "to".into());
+    assert_eq!(path.subpath(2..3), "Node".into());
+    assert_eq!(path.subpath(3..4), ":with".into());
+    assert_eq!(path.subpath(4..5), ":props".into());
 
-    assert_eq!(path.subpath(1, -1), "to/Node:with".into());
-    assert_eq!(path.subpath(1, parts as i32 - 1), "to/Node:with".into());
-    assert_eq!(path.subpath(0, -2), "path/to/Node".into());
-    assert_eq!(path.subpath(-3, -1), "Node:with".into());
-    assert_eq!(path.subpath(-2, i32::MAX), ":with:props".into());
-    assert_eq!(path.subpath(-1, i32::MAX), ":props".into());
+    assert_eq!(path.subpath(wrapped(1..-1)), "to/Node:with".into());
+    assert_eq!(
+        path.subpath(wrapped(1..parts as i32 - 1)),
+        "to/Node:with".into()
+    );
+    assert_eq!(path.subpath(wrapped(0..-2)), "path/to/Node".into());
+    assert_eq!(path.subpath(wrapped(-3..-1)), "Node:with".into());
+    assert_eq!(path.subpath(wrapped(-2..)), ":with:props".into());
+    assert_eq!(path.subpath(wrapped(-1..)), ":props".into());
 }
 
 #[itest]
@@ -113,7 +113,7 @@ fn node_path_get_name() {
     assert_eq!(path.get_name(1), "RigidBody2D".into());
     assert_eq!(path.get_name(2), "Sprite2D".into());
 
-    expect_debug_panic_or_release_ok("NodePath::get_name() out of bounds", || {
+    expect_panic_or_nothing("NodePath::get_name() out of bounds", || {
         assert_eq!(path.get_name(3), "".into());
     })
 }
@@ -124,7 +124,7 @@ fn node_path_get_subname() {
     assert_eq!(path.get_subname(0), "texture".into());
     assert_eq!(path.get_subname(1), "resource_name".into());
 
-    expect_debug_panic_or_release_ok("NodePath::get_subname() out of bounds", || {
+    expect_panic_or_nothing("NodePath::get_subname() out of bounds", || {
         assert_eq!(path.get_subname(2), "".into());
     })
 }

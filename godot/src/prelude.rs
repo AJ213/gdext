@@ -13,7 +13,7 @@ pub use super::classes::{
 pub use super::global::{
     godot_error, godot_print, godot_print_rich, godot_script_error, godot_warn,
 };
-pub use super::init::{gdextension, ExtensionLibrary, InitLevel};
+pub use super::init::{gdextension, ExtensionLibrary, InitLevel, InitStage};
 pub use super::meta::error::{ConvertError, IoError};
 pub use super::meta::{FromGodot, GodotConvert, ToGodot};
 pub use super::obj::{
@@ -33,8 +33,8 @@ mod trait_reexports {
     pub use crate::obj::EngineEnum as _;
     pub use crate::obj::NewAlloc as _;
     pub use crate::obj::NewGd as _;
-    pub use crate::obj::WithBaseField as _; // base(), base_mut(), to_gd()
-    pub use crate::obj::WithDeferredCall as _; // apply_deferred()
+    pub use crate::obj::Singleton as _; // singleton()
+    pub use crate::obj::WithBaseField as _; // base(), base_mut(), to_gd(), run_deferred(), run_deferred_gd()
     pub use crate::obj::WithSignals as _; // Gd::signals()
     pub use crate::obj::WithUserSignals as _; // self.signals()
 }
